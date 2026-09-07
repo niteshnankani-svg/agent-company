@@ -5,12 +5,12 @@ import responses from "./demo-responses.json";
 // running Agent Company backend (orchestrator + DistilBERT triage + verifier),
 // so the frontend can be deployed to Vercel with no backend to reach.
 //
-// It is ON by default whenever no live backend URL is configured (e.g. a plain
-// `vercel deploy`), and forced on by NEXT_PUBLIC_DEMO_MODE=1. Set
-// NEXT_PUBLIC_API_BASE_URL to a reachable backend to run against the real model.
-export const DEMO_MODE =
-  process.env.NEXT_PUBLIC_DEMO_MODE === "1" ||
-  !process.env.NEXT_PUBLIC_API_BASE_URL;
+// FORCE_DEMO (NEXT_PUBLIC_DEMO_MODE=1) skips the backend entirely and always
+// replays a captured response. Without it, lib/api.ts calls the live backend
+// first and only falls back to a captured response when the call fails — so a
+// deploy is "live" whenever NEXT_PUBLIC_API_BASE_URL points at a running
+// backend, and still works (on captured real data) when it does not.
+export const FORCE_DEMO = process.env.NEXT_PUBLIC_DEMO_MODE === "1";
 
 const CAPTURED = responses as Record<string, AgentResponse>;
 

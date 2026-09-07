@@ -13,7 +13,11 @@ export async function POST(req: NextRequest) {
   try {
     upstream = await fetch(`${API_BASE_URL}/request`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        // Skip the ngrok free-tier interstitial when the backend is tunnelled.
+        "ngrok-skip-browser-warning": "1",
+      },
       body,
     });
   } catch (err) {

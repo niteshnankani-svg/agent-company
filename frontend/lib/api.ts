@@ -1,7 +1,12 @@
 import type { AgentRequestBody, AgentResponse } from "./types";
-import { DEMO_MODE, demoResponseFor } from "./demoData";
+import { FORCE_DEMO, demoResponseFor } from "./demoData";
 
-export const API_BASE_URL = DEMO_MODE
+// FORCE_DEMO (NEXT_PUBLIC_DEMO_MODE=1) never calls the backend. Otherwise every
+// request tries the live API first and, if it is unreachable or errors,
+// transparently falls back to a captured real response for that ticket when one
+// exists. So a deploy works whether or not NEXT_PUBLIC_API_BASE_URL points at a
+// running backend.
+export const API_BASE_URL = FORCE_DEMO
   ? "demo · captured responses"
   : process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
 
@@ -21,6 +26,10 @@ export class ApiError extends Error {
   }
 }
 
+const NO_CAPTURE_MSG =
+  "The backend is unreachable and there is no captured response for this exact text. " +
+  "Pick one of the sample tickets, or point NEXT_PUBLIC_API_BASE_URL at a running backend.";
+
 // Requests go through same-origin Next.js API routes (app/api/agent/*), which
 // proxy to API_BASE_URL server-side. The real backend does not send CORS
 // headers, so a direct browser -> backend fetch is blocked; the proxy avoids
@@ -28,45 +37,56 @@ export class ApiError extends Error {
 export async function sendAgentRequest(
   body: AgentRequestBody,
 ): Promise<AgentResponse> {
-  if (DEMO_MODE) {
-    // No backend on a Vercel demo deploy — replay a captured response.
+  if (FORCE_DEMO) {
     await new Promise((r) => setTimeout(r, 450));
     const canned = demoResponseFor(body.raw_input);
     if (canned) return canned;
-    throw new ApiError(
-      "Demo build: this deployment replays a fixed set of captured tickets and has no live model. Pick one of the sample tickets below.",
-    );
+    throw new ApiError(NO_CAPTURE_MSG);
   }
 
-  let res: Response;
+  let res: Response | null = null;
+  let networkError: string | null = null;
   try {
     res = await fetch("/api/agent/request", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-  } catch {
-    throw new ApiError(
-      `Could not reach the Agent Company API at ${API_BASE_URL}. Is the backend running and NEXT_PUBLIC_API_BASE_URL set correctly?`,
-    );
+  } catch (err) {
+    networkError = (err as Error).message;
   }
 
-  if (!res.ok) {
+  if (res && res.ok) {
+    return (await res.json()) as AgentResponse;
+  }
+
+  // Live call failed. Preserve the Finance "needs structured fields" signal so
+  // AskConsole can still show its follow-up form.
+  if (res && !res.ok) {
     const text = await res.text().catch(() => "");
     let detail: string | undefined;
     try {
       detail = JSON.parse(text)?.detail;
     } catch {
-      // body wasn't JSON — leave detail undefined, fall back to raw text below
+      // body wasn't JSON
     }
-    throw new ApiError(
+    const err = new ApiError(
       `Request failed (${res.status} ${res.statusText}): ${detail || text || "no detail returned"}`,
       res.status,
       detail,
     );
+    if (isFinanceNeedsFieldsError(err)) throw err;
+    const canned = demoResponseFor(body.raw_input);
+    if (canned) return canned;
+    throw err;
   }
 
-  return (await res.json()) as AgentResponse;
+  // Network error / no response — fall back to a captured response if we have one.
+  const canned = demoResponseFor(body.raw_input);
+  if (canned) return canned;
+  throw new ApiError(
+    `Could not reach the Agent Company API at ${API_BASE_URL}. ${networkError ?? ""}`.trim(),
+  );
 }
 
 // Finance's department head raises a plain ValueError when sub_department
@@ -83,7 +103,7 @@ export function isFinanceNeedsFieldsError(err: unknown): boolean {
 }
 
 export async function checkHealth(): Promise<boolean> {
-  if (DEMO_MODE) return true;
+  if (FORCE_DEMO) return true;
   try {
     const res = await fetch("/api/agent/health", { cache: "no-store" });
     return res.ok;

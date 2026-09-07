@@ -5,7 +5,10 @@ const API_BASE_URL =
 
 export async function GET() {
   try {
-    const upstream = await fetch(`${API_BASE_URL}/health`, { cache: "no-store" });
+    const upstream = await fetch(`${API_BASE_URL}/health`, {
+      cache: "no-store",
+      headers: { "ngrok-skip-browser-warning": "1" },
+    });
     return new NextResponse(null, { status: upstream.ok ? 200 : 503 });
   } catch {
     return new NextResponse(null, { status: 503 });
