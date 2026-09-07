@@ -1,10 +1,34 @@
 # Agent Company — Trace Console
 
 A Next.js frontend for the Agent Company multi-department AI decision system.
-It calls the real `/request` backend API — nothing here is simulated. The
-core feature is `components/TraceGraph.tsx`, which replays the exact
-`audit_trail` array returned by the backend as an animated graph traversal
-(orchestrator → department head → verifier, looping back on retries).
+It calls the real `/request` backend API. The core feature is
+`components/TraceGraph.tsx`, which replays the exact `audit_trail` array
+returned by the backend as an animated graph traversal (orchestrator →
+department head → verifier, looping back on retries), alongside
+`components/BackendTriage.tsx` which renders the DistilBERT 5-class
+distribution and accept gate whenever a response carries `backend_triage`.
+
+### Demo mode (no backend)
+
+When `NEXT_PUBLIC_API_BASE_URL` is unset — or `NEXT_PUBLIC_DEMO_MODE=1` — the
+app runs entirely on `lib/demo-responses.json`: real `/request` responses
+captured verbatim from the running backend for the 9 sample tickets. Every
+panel is live; only inference on arbitrary typed text is disabled. This is
+what a plain Vercel deploy renders.
+
+## Deploy to Vercel
+
+```bash
+cd frontend
+npx vercel            # first run links/creates the project, then deploys a preview
+npx vercel --prod     # promote to production
+```
+
+No env vars needed for the standalone demo. To point the deploy at a live
+backend instead, set `NEXT_PUBLIC_API_BASE_URL` in the Vercel project
+(Settings → Environment Variables, or `npx vercel env add NEXT_PUBLIC_API_BASE_URL`)
+and redeploy. If you connect the whole repo (not just `frontend/`), set the
+project's **Root Directory** to `frontend`.
 
 ## Setup
 

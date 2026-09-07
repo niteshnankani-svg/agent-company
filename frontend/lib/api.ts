@@ -1,7 +1,9 @@
 import type { AgentRequestBody, AgentResponse } from "./types";
+import { DEMO_MODE, demoResponseFor } from "./demoData";
 
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
+export const API_BASE_URL = DEMO_MODE
+  ? "demo · captured responses"
+  : process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
 
 export class ApiError extends Error {
   status?: number;
@@ -26,6 +28,16 @@ export class ApiError extends Error {
 export async function sendAgentRequest(
   body: AgentRequestBody,
 ): Promise<AgentResponse> {
+  if (DEMO_MODE) {
+    // No backend on a Vercel demo deploy — replay a captured response.
+    await new Promise((r) => setTimeout(r, 450));
+    const canned = demoResponseFor(body.raw_input);
+    if (canned) return canned;
+    throw new ApiError(
+      "Demo build: this deployment replays a fixed set of captured tickets and has no live model. Pick one of the sample tickets below.",
+    );
+  }
+
   let res: Response;
   try {
     res = await fetch("/api/agent/request", {
@@ -71,6 +83,7 @@ export function isFinanceNeedsFieldsError(err: unknown): boolean {
 }
 
 export async function checkHealth(): Promise<boolean> {
+  if (DEMO_MODE) return true;
   try {
     const res = await fetch("/api/agent/health", { cache: "no-store" });
     return res.ok;
