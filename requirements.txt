@@ -1,0 +1,26 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+# Core: orchestrator, Finance, Export, Backend departments
+
+langgraph
+anthropic[bedrock]
+xgboost
+scikit-learn
+pandas
+numpy
+joblib
+faker
+httpx
+mcp
+
+# HR/Complaints: BERT sentiment + CrewAI pipeline
+
+# CrewAI 1.15.17 is the tested Python 3.11-compatible release; it does not
+# publish an "anthropic" extra, so Anthropic/Bedrock is declared above.
+crewai==1.15.17
+transformers
+torch==2.12.0+cpu
+
+# API layer (needed for deployment)
+
+fastapi
+uvicorn

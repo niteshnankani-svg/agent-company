@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+venv/
+venv_hr/
+.venv/
+*.log
+
+# Model / cache artifacts
+bert_cache/
+*.safetensors
+
+# Node / Next
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+frontend/playwright-report/
+frontend/test-results/
+frontend/tsconfig.tsbuildinfo
+
+# Env / secrets
+.env
+.env.local
+*.local
+
+# OS
+.DS_Store
