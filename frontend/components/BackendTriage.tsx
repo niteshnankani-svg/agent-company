@@ -43,6 +43,12 @@ export default function BackendTriage({
   escalationReason?: string | null;
 }) {
   const classified = triage.status === "classified" && !!triage.scores;
+  const modelName =
+    triage.model_type === "distilbert"
+      ? "DistilBERT"
+      : triage.model_type === "tfidf"
+        ? "TF-IDF"
+        : "model";
   const routed = decision.startsWith("route_to_team:");
   // On an escalation, only name a team if policy forced one (review_team);
   // the model's suggested_team is shown separately and would mislead here.
@@ -61,7 +67,7 @@ export default function BackendTriage({
           className="font-mono text-[11px] uppercase tracking-widest"
           style={{ color: ACCENT }}
         >
-          distilbert triage · backend / ticketing
+          {modelName.toLowerCase()} triage · backend / ticketing
         </span>
         <span
           className="font-mono text-[10px]"
@@ -150,7 +156,7 @@ export default function BackendTriage({
               status: {triage.status ?? "unknown"}
             </span>
             . PII scrubbing and the prompt-injection / security guard run{" "}
-            <em>before</em> the model, so blocked input never reaches DistilBERT.
+            <em>before</em> the model, so blocked input never reaches the classifier.
           </p>
         )}
 

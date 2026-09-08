@@ -1,22 +1,12 @@
 import type { AgentRequestBody, AgentResponse } from "./types";
-import { FORCE_DEMO, demoResponseFor } from "./demoData";
 
-// FORCE_DEMO (NEXT_PUBLIC_DEMO_MODE=1) never calls the backend. Otherwise every
-// request tries the live API first and, if it is unreachable or errors,
-// transparently falls back to a captured real response for that ticket when one
-// exists. So a deploy works whether or not NEXT_PUBLIC_API_BASE_URL points at a
-// running backend.
-export const API_BASE_URL = FORCE_DEMO
-  ? "demo · captured responses"
-  : process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
+// The orchestrator + Backend/Ticketing IT-triage model run inside this
+// deployment's own serverless routes (app/api/agent/*). Nothing external to
+// reach — this label is just what the header shows.
+export const API_BASE_URL = "in-process · tfidf-logistic";
 
 export class ApiError extends Error {
   status?: number;
-  // Raw `detail` string from the backend's JSON error body, when present.
-  // api.py wraps every uncaught exception in {"detail": "Request processing
-  // failed: <str(exception)>"} — this is that raw Python exception text, not
-  // a stable API contract, but it's the only signal available today for
-  // distinguishing *why* a request failed.
   detail?: string;
   constructor(message: string, status?: number, detail?: string) {
     super(message);
@@ -26,85 +16,45 @@ export class ApiError extends Error {
   }
 }
 
-const NO_CAPTURE_MSG =
-  "This deployment has no live backend, so it replays captured responses for the " +
-  "sample tickets only. Pick one of the tickets below — or set NEXT_PUBLIC_API_BASE_URL " +
-  "to a running Agent Company API for real-time inference on any text.";
-
-// Requests go through same-origin Next.js API routes (app/api/agent/*), which
-// proxy to API_BASE_URL server-side. The real backend does not send CORS
-// headers, so a direct browser -> backend fetch is blocked; the proxy avoids
-// that without changing the request/response contract in any way.
 export async function sendAgentRequest(
   body: AgentRequestBody,
 ): Promise<AgentResponse> {
-  if (FORCE_DEMO) {
-    await new Promise((r) => setTimeout(r, 450));
-    const canned = demoResponseFor(body.raw_input);
-    if (canned) return canned;
-    throw new ApiError(NO_CAPTURE_MSG);
-  }
-
-  let res: Response | null = null;
-  let networkError: string | null = null;
+  let res: Response;
   try {
     res = await fetch("/api/agent/request", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-  } catch (err) {
-    networkError = (err as Error).message;
+  } catch {
+    throw new ApiError("Could not reach the agent route. Try again.");
   }
 
-  if (res && res.ok) {
-    return (await res.json()) as AgentResponse;
-  }
-
-  // Live call failed. Preserve the Finance "needs structured fields" signal so
-  // AskConsole can still show its follow-up form.
-  if (res && !res.ok) {
+  if (!res.ok) {
     const text = await res.text().catch(() => "");
     let detail: string | undefined;
     try {
       detail = JSON.parse(text)?.detail;
     } catch {
-      // body wasn't JSON
+      // not JSON
     }
-    const err = new ApiError(
-      `Request failed (${res.status} ${res.statusText}): ${detail || text || "no detail returned"}`,
+    throw new ApiError(
+      `Request failed (${res.status}): ${detail || text || "no detail"}`,
       res.status,
       detail,
     );
-    if (isFinanceNeedsFieldsError(err)) throw err;
-    const canned = demoResponseFor(body.raw_input);
-    if (canned) return canned;
-    // Backend down and nothing captured for this exact text: show the friendly
-    // hint, not a raw 502 body.
-    throw new ApiError(NO_CAPTURE_MSG);
   }
 
-  // Network error / no response — fall back to a captured response if we have one.
-  const canned = demoResponseFor(body.raw_input);
-  if (canned) return canned;
-  throw new ApiError(NO_CAPTURE_MSG);
+  return (await res.json()) as AgentResponse;
 }
 
-// Finance's department head raises a plain ValueError when sub_department
-// isn't "ar"/"ap" (finance.py:170), which api.py turns into an uncaught 500 —
-// never a graceful `human_escalation` response. This is the only observable
-// signal that a request was routed to Finance without the structured fields
-// it needs. Matching backend exception text is inherently fragile; the
-// correct long-term fix is a backend change to catch this and return a
-// normal DepartmentOutput instead of raising.
-export function isFinanceNeedsFieldsError(err: unknown): boolean {
-  if (!(err instanceof ApiError) || err.status !== 500) return false;
-  const text = (err.detail || err.message).toLowerCase();
-  return text.includes("finance sub-department") || text.includes("finance sub_department");
+// Kept for AskConsole's import; the in-process route never raises this, so the
+// Finance follow-up form path is simply never triggered.
+export function isFinanceNeedsFieldsError(_err: unknown): boolean {
+  return false;
 }
 
 export async function checkHealth(): Promise<boolean> {
-  if (FORCE_DEMO) return true;
   try {
     const res = await fetch("/api/agent/health", { cache: "no-store" });
     return res.ok;

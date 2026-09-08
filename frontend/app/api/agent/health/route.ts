@@ -1,16 +1,9 @@
 import { NextResponse } from "next/server";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
+// The orchestrator + IT-triage model run in this deployment's own serverless
+// runtime, so there is no external backend to health-check.
+export const runtime = "nodejs";
 
 export async function GET() {
-  try {
-    const upstream = await fetch(`${API_BASE_URL}/health`, {
-      cache: "no-store",
-      headers: { "ngrok-skip-browser-warning": "1" },
-    });
-    return new NextResponse(null, { status: upstream.ok ? 200 : 503 });
-  } catch {
-    return new NextResponse(null, { status: 503 });
-  }
+  return NextResponse.json({ status: "ok" }, { status: 200 });
 }
