@@ -1,0 +1,11 @@
+# Vercel deploys with Root Directory = "frontend"; only the frontend needs to
+# be uploaded. Ignore everything, then re-include frontend/ (minus its build
+# artifacts).
+/*
+!/frontend
+/frontend/node_modules
+/frontend/.next
+/frontend/.vercel
+/frontend/test-results
+/frontend/playwright-report
+/frontend/.env.local

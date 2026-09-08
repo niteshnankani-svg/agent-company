@@ -27,8 +27,9 @@ export class ApiError extends Error {
 }
 
 const NO_CAPTURE_MSG =
-  "The backend is unreachable and there is no captured response for this exact text. " +
-  "Pick one of the sample tickets, or point NEXT_PUBLIC_API_BASE_URL at a running backend.";
+  "This deployment has no live backend, so it replays captured responses for the " +
+  "sample tickets only. Pick one of the tickets below — or set NEXT_PUBLIC_API_BASE_URL " +
+  "to a running Agent Company API for real-time inference on any text.";
 
 // Requests go through same-origin Next.js API routes (app/api/agent/*), which
 // proxy to API_BASE_URL server-side. The real backend does not send CORS
@@ -78,15 +79,15 @@ export async function sendAgentRequest(
     if (isFinanceNeedsFieldsError(err)) throw err;
     const canned = demoResponseFor(body.raw_input);
     if (canned) return canned;
-    throw err;
+    // Backend down and nothing captured for this exact text: show the friendly
+    // hint, not a raw 502 body.
+    throw new ApiError(NO_CAPTURE_MSG);
   }
 
   // Network error / no response — fall back to a captured response if we have one.
   const canned = demoResponseFor(body.raw_input);
   if (canned) return canned;
-  throw new ApiError(
-    `Could not reach the Agent Company API at ${API_BASE_URL}. ${networkError ?? ""}`.trim(),
-  );
+  throw new ApiError(NO_CAPTURE_MSG);
 }
 
 // Finance's department head raises a plain ValueError when sub_department

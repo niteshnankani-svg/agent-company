@@ -28,3 +28,6 @@ frontend/tsconfig.tsbuildinfo
 
 # OS
 .DS_Store
+
+# vercel
+.vercel

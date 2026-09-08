@@ -724,5 +724,223 @@
     "backend_triage": null,
     "escalation_reason": null,
     "needs_human": false
+  },
+  "Customer credit check for loan applicant": {
+    "decision": "human_escalation",
+    "confidence": 0.0,
+    "rationale": "Credit model quarantined: labeled default evaluation and provenance required.",
+    "evidence_ids": [],
+    "source": "human_escalation",
+    "audit_trail": [
+      {
+        "node": "orchestrator",
+        "decision": "finance",
+        "source": "local_model",
+        "request_id": "adv-fin"
+      },
+      {
+        "node": "finance_head",
+        "decision": "human_escalation",
+        "source": "human_escalation",
+        "request_id": "adv-fin"
+      },
+      {
+        "node": "verifier",
+        "decision": "pass",
+        "source": "local_model",
+        "request_id": "adv-fin"
+      }
+    ],
+    "department_history": null,
+    "backend_triage": null,
+    "escalation_reason": null,
+    "needs_human": true
+  },
+  "What is the HS code for cotton t-shirts?": {
+    "decision": "61091000",
+    "confidence": 0.85,
+    "rationale": "NiryatAI proposal: # HS Code for Cotton T-Shirts\n\nGreat question! T-shirts fall under **Chapter 61** (Knitted or crocheted articles of apparel).\n\n## The Specific HS Codes:\n\n**For knitted cotton t-shirts:**\n- **6109.10.00** \u2014 T-shirts of cotton\n\nThis is the **6-digit international HS code** that is standardized across ~200 countries.\n\n**India's extended 8-digit ITC-HS code:**\n- **61091000** \u2014 T-shirts of cotton\n\n---\n\n## Why This Matters for Your Export:\n\n1. **Market opportunity**: Looking at our world trade data, **t-shirts (HS 6109 - all fiber types) represent a $43.3 billion global import market**, with India capturing a strong **5% share ($2,092 million)**. This is a proven category!\n\n2. **Accessing export incentives**: You'll need this exact code to:\n   - Check RoDTEP/MEIS/SEIS scheme benefits\n   - Verify destination country import duties\n   - Register with the **Apparel Export Promotion Council (AEPC)** for board certification\n\n3. **Customs & documentation**: Use the 8-digit ITC-HS code on your **commercial invoice, packing list, and bill of lading**.\n\n---\n\n## How to Verify:\n\n- Search the official **Indian Trade Portal** or **dgft.gov.in** for \"cotton t-shirts\"\n- Cross-check on **Harmonized Tariff Schedule** (World Customs Organization)\n\n**Next step?** Once confirmed, are you looking to start cotton t-shirt exports, or do you need help with registration or costing?\nTradeStat commodity: T-SHIRTS ETC OF COTTON\nMarket signal: Hard to enter \u2014 India barely present",
+    "evidence_ids": [
+      "niryat_chat_proposal",
+      "tradestat_verified_61091000"
+    ],
+    "source": "llm",
+    "audit_trail": [
+      {
+        "node": "orchestrator",
+        "decision": "export_compliance",
+        "source": "local_model",
+        "request_id": "adv-exp"
+      },
+      {
+        "node": "export_head",
+        "decision": "61091000",
+        "source": "llm",
+        "request_id": "adv-exp"
+      },
+      {
+        "node": "verifier",
+        "decision": "pass",
+        "source": "local_model",
+        "request_id": "adv-exp"
+      }
+    ],
+    "department_history": null,
+    "backend_triage": null,
+    "escalation_reason": null,
+    "needs_human": false
+  },
+  "What is the punishment for murder under BNS?": {
+    "decision": "human_escalation",
+    "confidence": 0.0,
+    "rationale": "The Legal RAG backend was unreachable or returned an error: All connection attempts failed",
+    "evidence_ids": [],
+    "source": "human_escalation",
+    "audit_trail": [
+      {
+        "node": "orchestrator",
+        "decision": "legal_compliance",
+        "source": "local_model",
+        "request_id": "adv-leg"
+      },
+      {
+        "node": "legal_head",
+        "decision": "human_escalation",
+        "source": "human_escalation",
+        "request_id": "adv-leg"
+      },
+      {
+        "node": "verifier",
+        "decision": "pass",
+        "source": "local_model",
+        "request_id": "adv-leg"
+      }
+    ],
+    "department_history": null,
+    "backend_triage": null,
+    "escalation_reason": null,
+    "needs_human": true
+  },
+  "Export shipment financing request: cotton t-shirts export deal needs receivables financing": {
+    "decision": "human_escalation",
+    "confidence": 0.0,
+    "rationale": "Credit model quarantined: labeled default evaluation and provenance required.",
+    "evidence_ids": [],
+    "source": "human_escalation",
+    "audit_trail": [
+      {
+        "node": "orchestrator",
+        "decision": "sequential_request",
+        "source": "local_model",
+        "request_id": "adv-seq"
+      },
+      {
+        "node": "export_head",
+        "decision": "61091000",
+        "source": "llm",
+        "request_id": "adv-seq"
+      },
+      {
+        "node": "finance_head",
+        "decision": "human_escalation",
+        "source": "human_escalation",
+        "request_id": "adv-seq"
+      },
+      {
+        "node": "verifier",
+        "decision": "pass",
+        "source": "local_model",
+        "request_id": "adv-seq"
+      }
+    ],
+    "department_history": [
+      {
+        "department": "export_compliance",
+        "output": {
+          "decision": "61091000",
+          "confidence": 0.85,
+          "rationale": "NiryatAI proposal: # HS Code for Cotton T-Shirts\n\nGreat question! T-shirts fall under **Chapter 61** (Knitted or crocheted articles of apparel).\n\n## The Specific HS Code:\n\n**6109** \u2013 T-shirts and singlets, knitted or crocheted\n\nBreaking this down further:\n- **61091000** \u2013 T-shirts of cotton, knitted or crocheted\n\n### Why This Matters:\nAs discussed in our live training sessions, the correct HS code is **essential** for:\n1. **Accessing export data** \u2013 You can look up world demand and India's export volume for this product\n2. **Checking duty rates** \u2013 Import duties vary by destination country\n3. **Claiming government incentives** \u2013 RoDTEP, MEIS, and other schemes apply to specific HS codes\n4. **Registration with the right board** \u2013 Textile products need the correct classification for your Export Promotion Council (EPC)\n\n---\n\n## Market Context (Cotton T-Shirts):\n\n| Metric | Value |\n|--------|-------|\n| **World imports** | $43.3 billion |\n| **India's exports** | $2,092 million |\n| **India's market share** | 5.0% |\n\nIndia is a **significant player** in knitted t-shirt exports\u2014there's solid global demand here.\n\n---\n\n## Next Steps:\n\n1. **Verify your product specifics**: Is it 100% cotton? Knitted or woven? (Woven shirts are HS **6205** instead)\n2. **Check your destination country's duties** via your buyer's local tariff database\n3. **Register with IIFT** (if not done) using this HS code\n\nWould you like help with registration, costing, or finding buyers for cotton t-shirts? \ud83d\ude80\nTradeStat commodity: T-SHIRTS ETC OF COTTON\nMarket signal: Hard to enter \u2014 India barely present",
+          "evidence_ids": [
+            "niryat_chat_proposal",
+            "tradestat_verified_61091000"
+          ],
+          "source": "llm"
+        }
+      },
+      {
+        "department": "finance",
+        "output": {
+          "decision": "human_escalation",
+          "confidence": 0.0,
+          "rationale": "Credit model quarantined: labeled default evaluation and provenance required.",
+          "evidence_ids": [],
+          "source": "human_escalation",
+          "analysis": {
+            "recommendation": "human_review",
+            "reason": "credit_model_not_validated",
+            "default_probability": null,
+            "requires_human_approval": true,
+            "automated_action": false,
+            "basis": "Labeled default outcomes and training provenance are required before credit-model promotion."
+          }
+        }
+      }
+    ],
+    "backend_triage": null,
+    "escalation_reason": null,
+    "needs_human": true
+  },
+  "My login keeps failing with a 500 error": {
+    "decision": "human_escalation",
+    "confidence": 0.5257407861301248,
+    "rationale": "DistilBERT suggests Access / Desktop Support with score 0.53. Human review required (it_classification_uncertain); classification does not resolve the ticket.",
+    "evidence_ids": [],
+    "source": "local_model",
+    "audit_trail": [
+      {
+        "node": "orchestrator",
+        "decision": "backend_ticketing",
+        "source": "local_model",
+        "request_id": "ask-a"
+      },
+      {
+        "node": "backend_head",
+        "decision": "human_escalation",
+        "source": "local_model",
+        "request_id": "ask-a",
+        "model_version": "distilbert-9dee1c0e4ad0",
+        "it_category": "Access",
+        "review_reason": "it_classification_uncertain"
+      },
+      {
+        "node": "verifier",
+        "decision": "pass",
+        "source": "local_model",
+        "request_id": "ask-a"
+      }
+    ],
+    "department_history": null,
+    "backend_triage": {
+      "status": "classified",
+      "model_version": "distilbert-9dee1c0e4ad0",
+      "model_type": "distilbert",
+      "category": "Access",
+      "suggested_team": "Desktop Support",
+      "confidence": 0.5257407861301248,
+      "scores": {
+        "Access": 0.5257407861301248,
+        "Hardware": 0.012848873227822764,
+        "Network": 0.06594917720526192,
+        "Security": 0.03281551871177543,
+        "Software": 0.36264564472501515
+      },
+      "accepted": false,
+      "threshold": 0.55,
+      "truncated": false,
+      "advisory_only": true,
+      "production_validated": false
+    },
+    "escalation_reason": "it_classification_uncertain",
+    "needs_human": true
   }
 }
