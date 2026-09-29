@@ -172,7 +172,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ detail: "raw_input is required" }, { status: 400 });
   }
 
-  const orch = localClassify(rawInput);
+  const orch = await localClassify(rawInput);
   // No keyword match -> treat as an IT ticket and let the model + accept gate
   // decide (this mirrors the real orchestrator's LLM fallback, minus the LLM).
   const dept: Department = orch.department ?? "backend_ticketing";

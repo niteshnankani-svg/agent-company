@@ -1,6 +1,10 @@
 // In-process port of agent_company/orchestrator.py::local_classify and the
-// backend_ticketing.py guards. Deterministic keyword routing across the five
-// departments; the Backend / Ticketing lane then runs the TF-IDF IT model.
+// backend_ticketing.py guards. Routes across the five departments via
+// TypeSafe's Jev model; the Backend / Ticketing lane then runs the TF-IDF IT
+// model. TYPESAFE_API_KEY must be set (server-side only — this file is only
+// ever imported from the nodejs-runtime API route, never a client component).
+
+import { choice, TypeSafeClient } from "@typesafe-ai/sdk";
 
 export type Department =
   | "finance"
@@ -9,38 +13,34 @@ export type Department =
   | "export_compliance"
   | "legal_compliance";
 
-// Order matters: ties resolve to the first department, so the specific business
-// departments come before the broad IT catch-all.
-export const KEYWORD_MAP: Record<Department, string[]> = {
-  finance: [
-    "invoice", "payment", "credit", "loan", "supplier payable", "vendor", "refund",
-    "charged", "billing", "reimbursement", "ledger", "payable", "accounts receivable",
-    "accounts payable", "purchase order",
-  ],
-  hr_complaints: [
-    "complaint", "grievance", "harassment", "employee issue", "payroll", "onboarding",
-    "hiring", "benefits", "leave request", "manager", "coworker", "colleague",
-    "workplace", "discrimination", "bullying",
-  ],
-  export_compliance: [
-    "hs code", "export", "shipment", "customs", "tariff", "import", "freight",
-    "shipping", "bill of lading", "incoterm", "duty drawback",
-  ],
-  legal_compliance: [
-    "bns", "bnss", "bsa", "dpdp", "murder", "section", "punishment", "legal", "law",
-    "act", "contract", "compliance", "regulation", "nda", "liability", "lawsuit",
-    "clause", "counsel", "statute",
-  ],
-  backend_ticketing: [
-    "error", "bug", "ticket", "system down", "crash", "server", "timeout", "login",
-    "log in", "sign in", "upload", "database", "api", "vpn", "password", "laptop",
-    "computer", "desktop", "printer", "hardware", "software", "network", "wifi",
-    "wi-fi", "router", "firewall", "malware", "ransomware", "phishing", "access",
-    "application", "ethernet", "dns", "keyboard", "monitor", "battery", "screen",
-    "shared folder", "authentication", "browser", "brute force", "data breach",
-    "outlook", "email not", "cannot connect", "won't boot", "not working",
-    "reset my", "blue screen", "frozen", "reboot",
-  ],
+const typesafeClient = new TypeSafeClient();
+
+// Descriptions derived from the department definitions this router used
+// before Jev (see git history for the original keyword lists); kept
+// identical to agent_company/orchestrator.py's _DEPARTMENT_CRITERIA.
+const DEPARTMENT_CRITERIA: Record<Department, string> = {
+  finance:
+    "Invoices, payments, credit, loans, supplier/vendor payables, refunds, " +
+    "charges, billing, reimbursement, ledger entries, accounts receivable " +
+    "or payable, purchase orders",
+  hr_complaints:
+    "Employee complaints, grievances, harassment, payroll, onboarding, " +
+    "hiring, benefits, leave requests, manager/coworker/colleague " +
+    "workplace issues, discrimination, bullying",
+  export_compliance:
+    "HS codes, exports, shipments, customs, tariffs, imports, freight, " +
+    "shipping, bill of lading, incoterms, duty drawback",
+  legal_compliance:
+    "Statutes (BNS, BNSS, BSA, DPDP), legal sections, contracts, " +
+    "compliance, regulation, NDAs, liability, lawsuits, clauses, " +
+    "counsel, law/legal questions",
+  backend_ticketing:
+    "IT and technical issues: errors, bugs, tickets, system outages, " +
+    "crashes, servers, timeouts, login/sign-in problems, uploads, " +
+    "databases, APIs, VPN, passwords, hardware (laptop, desktop, " +
+    "printer, keyboard, monitor), software, network, wifi, routers, " +
+    "firewalls, malware, phishing, access, applications, authentication, " +
+    "browsers, data breaches",
 };
 
 export const DEPT_NODE: Record<Department, string> = {
@@ -62,24 +62,20 @@ export const DEPT_LABEL: Record<Department, string> = {
 export interface OrchestratorResult {
   department: Department | null;
   confidence: number;
-  hits: string[];
 }
 
-export function localClassify(text: string): OrchestratorResult {
-  const lo = text.toLowerCase();
-  let best: Department | null = null;
-  let bestCount = 0;
-  let hits: string[] = [];
-  for (const dept of Object.keys(KEYWORD_MAP) as Department[]) {
-    const h = KEYWORD_MAP[dept].filter((k) => lo.includes(k));
-    if (h.length > bestCount) {
-      bestCount = h.length;
-      best = dept;
-      hits = h;
-    }
-  }
-  if (bestCount === 0) return { department: null, confidence: 0, hits: [] };
-  return { department: best, confidence: Math.min(0.6 + 0.15 * bestCount, 0.95), hits };
+export async function localClassify(text: string): Promise<OrchestratorResult> {
+  const response = await typesafeClient.systemOne({
+    state: text,
+    questions: {
+      department: choice(
+        "Which department should handle this request?",
+        DEPARTMENT_CRITERIA,
+      ),
+    },
+  });
+  const answer = response.answers.department;
+  return { department: answer.choice, confidence: answer.confidence };
 }
 
 // Guards from backend_ticketing.py — run before the model.
