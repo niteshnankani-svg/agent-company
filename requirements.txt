@@ -3,6 +3,7 @@
 
 langgraph
 anthropic[bedrock]
+typesafe-sdk==0.7.2
 xgboost
 scikit-learn
 pandas

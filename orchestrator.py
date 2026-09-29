@@ -1,3 +1,5 @@
+from typesafe_sdk import Choice, TypeSafeClient
+
 try:
     from cache import DepartmentCache
     from state import GraphState, log_audit
@@ -18,73 +20,56 @@ DEPARTMENTS = [
     "legal_compliance",
 ]
 
-# Order matters: local_classify() breaks ties by first-seen department, so the
-# specific business departments are listed before backend_ticketing (the broad
-# IT catch-all). Widened from the 5-word backend list that used to send every
-# unmatched IT ticket to the Bedrock fallback. See docs/ROUTING_REGRESSION.md.
-_KEYWORD_MAP = {
-    "finance": [
-        "invoice", "payment", "credit", "loan", "supplier payable", "vendor",
-        "refund", "charged", "billing", "reimbursement", "ledger", "payable",
-        "accounts receivable", "accounts payable", "purchase order",
-    ],
-    "hr_complaints": [
-        "complaint", "grievance", "harassment", "employee issue", "payroll",
-        "onboarding", "hiring", "benefits", "leave request", "manager",
-        "coworker", "colleague", "workplace", "discrimination", "bullying",
-    ],
-    "export_compliance": [
-        "hs code", "export", "shipment", "customs", "tariff", "import",
-        "freight", "shipping", "bill of lading", "incoterm", "duty drawback",
-    ],
-    "legal_compliance": [
-        "bns",
-        "bnss",
-        "bsa",
-        "dpdp",
-        "murder",
-        "section",
-        "punishment",
-        "legal",
-        "law",
-        "act",
-        "contract",
-        "compliance",
-        "regulation",
-        "nda",
-        "liability",
-        "lawsuit",
-        "clause",
-        "counsel",
-        "statute",
-    ],
-    "backend_ticketing": [
-        "error", "bug", "ticket", "system down", "crash", "server", "timeout",
-        "login", "log in", "sign in", "upload", "database", "api", "vpn",
-        "password", "laptop", "computer", "desktop", "printer", "hardware",
-        "software", "network", "wifi", "wi-fi", "router", "firewall",
-        "malware", "ransomware", "phishing", "access", "application",
-        "ethernet", "dns", "keyboard", "monitor", "battery", "screen",
-        "shared folder", "authentication", "browser", "brute force",
-        "data breach", "outlook", "email not", "cannot connect", "won't boot",
-        "not working", "reset my", "blue screen", "frozen", "reboot",
-    ],
+typesafe_client = TypeSafeClient()
+
+# Descriptions derived from the department definitions this router used
+# before Jev (see git history for the original keyword lists).
+_DEPARTMENT_CRITERIA = {
+    "finance": (
+        "Invoices, payments, credit, loans, supplier/vendor payables, refunds, "
+        "charges, billing, reimbursement, ledger entries, accounts receivable "
+        "or payable, purchase orders"
+    ),
+    "hr_complaints": (
+        "Employee complaints, grievances, harassment, payroll, onboarding, "
+        "hiring, benefits, leave requests, manager/coworker/colleague "
+        "workplace issues, discrimination, bullying"
+    ),
+    "export_compliance": (
+        "HS codes, exports, shipments, customs, tariffs, imports, freight, "
+        "shipping, bill of lading, incoterms, duty drawback"
+    ),
+    "legal_compliance": (
+        "Statutes (BNS, BNSS, BSA, DPDP), legal sections, contracts, "
+        "compliance, regulation, NDAs, liability, lawsuits, clauses, "
+        "counsel, law/legal questions"
+    ),
+    "backend_ticketing": (
+        "IT and technical issues: errors, bugs, tickets, system outages, "
+        "crashes, servers, timeouts, login/sign-in problems, uploads, "
+        "databases, APIs, VPN, passwords, hardware (laptop, desktop, "
+        "printer, keyboard, monitor), software, network, wifi, routers, "
+        "firewalls, malware, phishing, access, applications, authentication, "
+        "browsers, data breaches"
+    ),
 }
 
 
 def local_classify(text: str) -> tuple[str | None, float]:
-    # Deterministic keyword classifier — swap for a trained DistilBERT model
-    # with this exact same function signature; nothing downstream needs to change.
-    lowered = text.lower()
-    counts = {
-        department: sum(keyword in lowered for keyword in keywords)
-        for department, keywords in _KEYWORD_MAP.items()
-    }
-    department, count = max(counts.items(), key=lambda item: item[1])
-    if count == 0:
-        return None, 0.0
-    confidence = min(0.6 + 0.15 * count, 0.95)
-    return department, confidence
+    # TypeSafe's Jev model classifies via a Choice question over the same
+    # five departments — same function signature as before; nothing
+    # downstream needs to change.
+    response = typesafe_client.system_one(
+        state=text,
+        questions={
+            "department": Choice(
+                instructions="Which department should handle this request?",
+                criteria=_DEPARTMENT_CRITERIA,
+            ),
+        },
+    )
+    answer = response.choices["department"]
+    return answer.choice, answer.confidence
 
 
 ORCHESTRATOR_PROMPT = """Respond with EXACTLY ONE department name from this list:
