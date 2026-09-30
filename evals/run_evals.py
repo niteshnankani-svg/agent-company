@@ -25,7 +25,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cases import CASES
 
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 GROK_MODEL = os.environ.get("GROK_MODEL", "grok-4")
 
 JUDGE_PROMPT_TEMPLATE = """You are grading one response from a multi-department support-ticket router.
