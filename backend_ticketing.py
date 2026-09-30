@@ -1,22 +1,22 @@
-"""Backend department: trained DistilBERT classification, team routing, and human handoff.
+"""Backend department: the deployed ticketing agent (via ticketing_mcp.py)
+classifies and, when confident, resolves the ticket directly.
 
-A confident, benign prediction is routed to the team the model suggests
-(``route_to_team:<team>``); it is NOT marked resolved — the assigned team still
-works the ticket. Everything uncertain, Security, Access, injected, or invalid
-is escalated to a human. See docs/ROUTING_REGRESSION.md.
+Input validation, PII scrubbing, and injection/security-keyword screening all
+happen locally first, unchanged, regardless of which agent answers - these
+are checks on the raw text itself, not on the classifier. Only text that
+passes them ever reaches the ticketing agent. Whatever it can't confidently
+resolve is escalated to a human, using its own needs_human/escalation_reason
+verdict rather than a locally re-derived confidence gate.
 """
+import asyncio
 import re
-
-# DistilBERT margin below which the class is too close to auto-route. The model's
-# own accept gate is lower (~0.55); between the gate and this we still escalate.
-ROUTE_MARGIN = 0.65
 
 if not __package__:
     from state import DepartmentOutput, GraphState, log_audit
-    from backend_model import predict_backend
+    from ticketing_mcp import ask_ticketing_agent
 else:
     from .state import DepartmentOutput, GraphState, log_audit
-    from .backend_model import predict_backend
+    from .ticketing_mcp import ask_ticketing_agent
 
 
 def backend_head_node(state: GraphState) -> GraphState:
@@ -28,59 +28,58 @@ def backend_head_node(state: GraphState) -> GraphState:
     text = re.sub(r'\b(?:\d[ -]*?){13,16}\b', '<CARD>', text)
     injection = re.search(r'ignore\s+(all\s+)?(previous|prior|system)|system\s*prompt|reveal\s+.*secret|bypass\s+.*(auth|guard)', text, re.I)
     security = re.search(r'\b(malware|ransomware|phishing|breach|botnet|ddos|intrusion|keylogger)\b|compromised\s+credentials|unauthorized\s+access|suspicious\s+|brute\s+force', text, re.I)
+
     if not valid or injection:
-        prediction = {'status':'blocked', 'accepted':False, 'advisory_only':True}
+        result = None
         reason = 'invalid_ticket_input' if not valid else 'security_review'
         decision = 'human_escalation'
-    else:
-        prediction = predict_backend(text)
-        score = prediction.get('confidence', 0.0)
-        if security or (prediction.get('accepted') and prediction.get('category') == 'Security'):
-            reason = 'security_incident_review'
-            prediction['review_team'] = 'Security Team'
-            decision = 'human_escalation'
-        elif prediction.get('accepted') and prediction.get('category') == 'Access':
-            reason = 'access_authorization_required'
-            decision = 'human_escalation'
-        elif not prediction.get('accepted'):
-            reason = 'it_classification_uncertain' if prediction.get('status') == 'classified' else 'it_classifier_' + prediction['status']
-            decision = 'human_escalation'
-        elif score < ROUTE_MARGIN:
-            reason = 'it_classification_low_margin'
-            decision = 'human_escalation'
-        else:
-            # Confident, benign IT ticket: assign the queue the model suggests.
-            # This is the routing decision a pre-BERT confidence gate made; it
-            # does NOT resolve the ticket, so no resolution evidence is claimed.
-            reason = None
-            decision = 'route_to_team:' + prediction['suggested_team']
-
-    if decision.startswith('route_to_team:'):
-        rationale = (f"DistilBERT classified this as {prediction['category']} with score "
-                     f"{prediction['confidence']:.2f} (accept gate {prediction.get('threshold', 0.0):.2f}); "
-                     f"routing to {prediction['suggested_team']}. Classification only — the assigned "
-                     'team resolves the ticket.')
-        evidence_ids = [f"distilbert:{prediction.get('model_version')}",
-                        f"it_category:{prediction['category']}",
-                        f"suggested_team:{prediction['suggested_team']}"]
-    else:
+        confidence = 0.0
         rationale = 'Backend specialist review required.'
-        if prediction.get('category'):
-            rationale = (f"DistilBERT suggests {prediction['category']} / {prediction['suggested_team']} "
-                         f"with score {prediction['confidence']:.2f}. Human review required "
-                         f"({reason}); classification does not resolve the ticket.")
-        if prediction.get('review_team'):
-            rationale += ' Security policy requires Security Team review.'
+        evidence_ids: list[str] = []
+    elif security:
+        result = None
+        reason = 'security_incident_review'
+        decision = 'human_escalation'
+        confidence = 0.0
+        rationale = 'Security-related keywords detected; Security Team review required.'
         evidence_ids = []
+    else:
+        result = asyncio.run(ask_ticketing_agent(text))
 
-    output = DepartmentOutput(decision=decision, confidence=prediction.get('confidence', 0.),
-                              rationale=rationale, evidence_ids=evidence_ids, source='local_model')
+        if 'error' in result:
+            reason = 'ticketing_agent_unreachable'
+            decision = 'human_escalation'
+            confidence = 0.0
+            rationale = (
+                'The ticketing agent was unreachable or returned an error: '
+                f"{result.get('detail', result['error'])}"
+            )
+            evidence_ids = []
+        elif result.get('needs_human') or result.get('status') == 'needs_human_review':
+            reason = result.get('escalation_reason') or result.get('reason') or 'ticketing_agent_escalated'
+            decision = 'human_escalation'
+            confidence = result.get('confidence', 0.0)
+            category = result.get('category') or result.get('predicted_category')
+            rationale = (
+                f"Ticketing agent escalated this ticket ({reason})"
+                + (f"; predicted category: {category}" if category else '')
+                + '.'
+            )
+            evidence_ids = []
+        else:
+            reason = None
+            decision = 'answered'
+            confidence = 1.0
+            rationale = result.get('answer', '')
+            evidence_ids = [f"ticketing_agent:{result.get('category')}"]
 
-    state['backend_triage'] = prediction
+    output = DepartmentOutput(decision=decision, confidence=confidence,
+                              rationale=rationale, evidence_ids=evidence_ids, source='llm' if decision == 'answered' else 'human_escalation')  # type: ignore[typeddict-item]
+
+    state['backend_triage'] = result
     state['escalation_reason'] = reason
     state["department_output"] = output
     state["active_department"] = "backend_ticketing"
     log_audit(state, "backend_head", output["decision"], source=output["source"])
-    state['audit_trail'][-1].update({'model_version':prediction.get('model_version'),
-                                   'it_category':prediction.get('category'), 'review_reason':reason})
+    state['audit_trail'][-1].update({'ticketing_agent_category': (result or {}).get('category'), 'review_reason': reason})
     return state
