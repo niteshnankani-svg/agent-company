@@ -3,54 +3,25 @@
 A specific complaint or grievance (harassment, workplace conflict,
 discrimination, bullying) always goes to human review - this system does not
 attempt to resolve those. A general informational question about employee
-data (headcounts, department stats, etc.) is answered by hr-agent
-(https://github.com/.../hr-agent), a local Text-to-SQL + RAG tool over the
-employee dataset, running via Ollama on this machine.
+data (headcounts, department stats, etc.) is answered by the local HR agent
+(via hr_agent_mcp.py -> hr-agent/query_server.py -> hr_agent.py's Text-to-SQL
++ RAG over employee data, running through Ollama on this machine).
 """
-import sys
-import threading
-from pathlib import Path
+import asyncio
 
 from typesafe_sdk import Noul, TypeSafeClient
 
 try:
     from cache import DepartmentCache
     from state import DepartmentOutput, GraphState, log_audit
+    from hr_agent_mcp import ask_hr_agent
 except ImportError:
     from .cache import DepartmentCache
     from .state import DepartmentOutput, GraphState, log_audit
+    from .hr_agent_mcp import ask_hr_agent
 
 hr_cache = DepartmentCache(department="hr_complaints", similarity_threshold=0.92)
 typesafe_client = TypeSafeClient()
-
-_HR_AGENT_DIR = Path("/Users/apple/Projects/hr-agent")
-if str(_HR_AGENT_DIR) not in sys.path:
-    sys.path.insert(0, str(_HR_AGENT_DIR))
-
-_hr_agent_state = {"conn": None, "client": None, "retriever": None}
-# api.py runs each request in its own worker thread (asyncio.to_thread), so
-# the shared SQLite connection + retriever below need exclusive access per
-# call - sqlite3's check_same_thread=False only disables the same-thread
-# check, it does not make a connection safe for concurrent use.
-_hr_agent_lock = threading.Lock()
-
-
-def _get_hr_agent():
-    # Built lazily (not at import time) so importing this module never
-    # requires Ollama to be reachable - only actually answering a question does.
-    if _hr_agent_state["conn"] is None:
-        from hr_agent import CSV_PATH, Ollama, Retriever, build_database
-
-        _hr_agent_state["conn"] = build_database(CSV_PATH)
-        _hr_agent_state["client"] = Ollama()
-        _hr_agent_state["retriever"] = Retriever(
-            _hr_agent_state["conn"], _hr_agent_state["client"]
-        )
-    return (
-        _hr_agent_state["conn"],
-        _hr_agent_state["client"],
-        _hr_agent_state["retriever"],
-    )
 
 
 def _human_escalation_output(rationale: str, confidence: float, evidence_ids: list[str]) -> DepartmentOutput:
@@ -105,32 +76,26 @@ def hr_head_node(state: GraphState) -> GraphState:
         log_audit(state, "hr_head", output["decision"], source="human_escalation")
         return state
 
-    try:
-        from hr_agent import answer_question
+    result = asyncio.run(ask_hr_agent(text))
 
-        with _hr_agent_lock:
-            conn, client, retriever = _get_hr_agent()
-            answer = answer_question(conn, text, client, retriever)
-        output: DepartmentOutput = {
-            "decision": "answered",
-            "confidence": 1.0 - complaint_probability,
-            "rationale": answer,
-            "evidence_ids": ["hr_agent_text2sql_rag"],
-            "source": "llm",
-        }
-    except Exception as error:
+    if "error" in result:
         output = _human_escalation_output(
-            f"hr-agent could not answer this question: {error}",
+            f"HR agent was unreachable or returned an error: "
+            f"{result.get('detail', result['error'])}",
             0.0,
             [],
         )
-        state["department_output"] = output
-        state["active_department"] = "hr_complaints"
-        log_audit(state, "hr_head", output["decision"], source="human_escalation")
-        return state
+    else:
+        output: DepartmentOutput = {
+            "decision": "answered",
+            "confidence": 1.0 - complaint_probability,
+            "rationale": result.get("answer", ""),
+            "evidence_ids": ["hr_agent_text2sql_rag"],
+            "source": "llm",
+        }
 
     state["department_output"] = output
     state["active_department"] = "hr_complaints"
-    log_audit(state, "hr_head", output["decision"], source="llm")
+    log_audit(state, "hr_head", output["decision"], source=output["source"])
     # Never write to cache directly - only the verifier does, on pass.
     return state
