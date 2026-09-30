@@ -37,6 +37,5 @@ pip install -r requirements.txt
 
 Note: HR/Complaints also requires:
 
-- `complaint_agent.py` present in this same project folder (copy it in from wherever your original AI Complaint Intelligence Agent lives)
-- The 7 BERT model weight folders under `models/hr_complaints/` (or wherever `MODEL_MAP` points), each containing `config.json`, `tokenizer_config.json`, `tokenizer.json`, and `model.safetensors`
-- `ANTHROPIC_API_KEY` set as an environment variable
+- [hr-agent](https://github.com/.../hr-agent) checked out at `/Users/apple/Projects/hr-agent` (Text-to-SQL + RAG over employee data) with `ollama serve` running and the `llama3.2` / `embeddinggemma` models pulled
+- `TYPESAFE_API_KEY` set as an environment variable (gates complaints, which always escalate to a human, from general HR questions, which hr-agent answers)

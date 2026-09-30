@@ -24,9 +24,12 @@ const DEPARTMENT_CRITERIA: Record<Department, string> = {
     "charges, billing, reimbursement, ledger entries, accounts receivable " +
     "or payable, purchase orders",
   hr_complaints:
-    "Employee complaints, grievances, harassment, payroll, onboarding, " +
-    "hiring, benefits, leave requests, manager/coworker/colleague " +
-    "workplace issues, discrimination, bullying",
+    "Employee/HR matters: complaints, grievances, harassment, " +
+    "discrimination, bullying, workplace conflicts (always escalated to " +
+    "a human) as well as general informational questions about " +
+    "employees or HR data - headcounts, department stats, payroll, " +
+    "onboarding, hiring, benefits, leave requests (answered directly " +
+    "when possible)",
   export_compliance:
     "HS codes, exports, shipments, customs, tariffs, imports, freight, " +
     "shipping, bill of lading, incoterms, duty drawback",

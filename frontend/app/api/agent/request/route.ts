@@ -172,6 +172,38 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ detail: "raw_input is required" }, { status: 400 });
   }
 
+  // When set, prefer the real Python backend (full orchestrator + real
+  // department logic, e.g. hr-agent, NiryatAI, legal RAG - none of which can
+  // run in this serverless function) over the in-process reimplementation
+  // below. Typically a tunnel URL for a backend running outside Vercel;
+  // falls through to the reimplementation if unset, unreachable, or slow.
+  const liveBackendUrl = process.env.AGENT_COMPANY_API_URL;
+  if (liveBackendUrl) {
+    try {
+      const liveResponse = await fetch(
+        `${liveBackendUrl.replace(/\/$/, "")}/request`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ request_id: requestId, raw_input: rawInput }),
+          signal: AbortSignal.timeout(25000),
+        },
+      );
+      if (liveResponse.ok) {
+        const result: AgentResponse = await liveResponse.json();
+        return NextResponse.json(result, { status: 200 });
+      }
+      console.error(
+        `Live backend at ${liveBackendUrl} returned ${liveResponse.status}; falling back to in-process logic.`,
+      );
+    } catch (error) {
+      console.error(
+        `Live backend at ${liveBackendUrl} unreachable; falling back to in-process logic.`,
+        error,
+      );
+    }
+  }
+
   const orch = await localClassify(rawInput);
   // No keyword match -> treat as an IT ticket and let the model + accept gate
   // decide (this mirrors the real orchestrator's LLM fallback, minus the LLM).

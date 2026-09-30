@@ -1,4 +1,3 @@
---extra-index-url https://download.pytorch.org/whl/cpu
 # Core: orchestrator, Finance, Export, Backend departments
 
 langgraph
@@ -11,15 +10,14 @@ numpy
 joblib
 faker
 httpx
-mcp
+# niryat_mcp.py / legal_rag_mcp.py use the FastMCP v1 API (mcp 2.x renamed
+# it to MCPServer with a different interface).
+mcp<2
 
-# HR/Complaints: BERT sentiment + CrewAI pipeline
-
-# CrewAI 1.15.17 is the tested Python 3.11-compatible release; it does not
-# publish an "anthropic" extra, so Anthropic/Bedrock is declared above.
-crewai==1.15.17
-transformers
-torch==2.12.0+cpu
+# HR/Complaints: Jev (complaint vs. general-question gate) + hr-agent
+# (Text-to-SQL/RAG over employee data, github.com/.../hr-agent). No local
+# BERT model or CrewAI needed - the prior complaint_agent.py pipeline
+# (transformers/torch/crewai) is retired; see git history if reviving it.
 
 # API layer (needed for deployment)
 
