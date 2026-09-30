@@ -19,6 +19,11 @@ import { predictHelpdesk } from "@/lib/helpdeskModel";
 // models/helpdesk/model.json. Finance / HR / Legal / Export keep their real
 // separate backends, which aren't bundled into this deployment.
 export const runtime = "nodejs";
+// A real HR answer chains two local (CPU, Ollama) LLM calls and can take
+// 60-90s+ on a fresh (uncached) question - opt into the platform's max
+// duration rather than the low default. Still not always enough; the proxy
+// below falls back gracefully rather than erroring if this is exceeded.
+export const maxDuration = 60;
 
 const audit = (
   node: string,
@@ -186,7 +191,9 @@ export async function POST(req: NextRequest) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ request_id: requestId, raw_input: rawInput }),
-          signal: AbortSignal.timeout(25000),
+          // Leaves ~5s of the 60s maxDuration budget above for the
+          // fallback path itself, in case this is exceeded.
+          signal: AbortSignal.timeout(55000),
         },
       );
       if (liveResponse.ok) {
