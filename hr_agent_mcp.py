@@ -9,10 +9,16 @@ several minutes under load from this machine's other local services
 (legal-rag-chatbot, agent_company itself) competing for CPU - see the
 caller's own timeout/maxDuration handling.
 """
+import os
+
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-HR_AGENT_QUERY_URL = "http://localhost:8090/query"
+# Defaults to the local hr-agent query_server; override when it runs
+# anywhere a container has to reach over the network.
+HR_AGENT_QUERY_URL = os.getenv(
+    "HR_AGENT_QUERY_URL", "http://localhost:8090/query"
+)
 
 mcp = FastMCP("hr-agent")
 

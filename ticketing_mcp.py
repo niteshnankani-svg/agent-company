@@ -8,10 +8,17 @@ into finance/backend/internal/general and, unless it escalates, returns a
 real Claude-generated answer. needs_human/escalation_reason are the ticket's
 own verdict on whether that answer is trustworthy enough to use as-is.
 """
+import os
+
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-TICKETING_URL = "https://d26edylmd2q5pk.cloudfront.net/ticket"
+# The EC2 box behind this CloudFront distribution has been terminated, so
+# the old default is dead. Point TICKETING_URL at wherever the
+# Multi_agent_ticketing_system backend actually runs.
+TICKETING_URL = os.getenv(
+    "TICKETING_URL", "https://d26edylmd2q5pk.cloudfront.net/ticket"
+)
 
 mcp = FastMCP("ticketing-agent")
 

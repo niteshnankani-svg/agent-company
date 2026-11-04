@@ -1,10 +1,14 @@
 """MCP wrapper for the locally running Legal RAG backend."""
 
+import os
+
 import httpx
 from mcp.server.fastmcp import FastMCP
 
 
-LEGAL_QUERY_URL = "http://localhost:8000/query"
+# Defaults to the local legal-rag-chatbot; override when it runs anywhere
+# a container has to reach over the network.
+LEGAL_QUERY_URL = os.getenv("LEGAL_QUERY_URL", "http://localhost:8000/query")
 mcp = FastMCP("legal-rag")
 
 
