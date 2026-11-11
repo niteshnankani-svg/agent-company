@@ -117,7 +117,7 @@ def test_human_review_after_verifier_cap_keeps_the_unverified_result_and_says_wh
 def test_an_unexpected_exception_in_a_department_becomes_failed_not_a_crash(monkeypatch):
     import departments
 
-    def boom(raw, fields, sub): raise ValueError("secret detail that must not leak")
+    def boom(raw, fields, sub, follow_up): raise ValueError("secret detail that must not leak")
     monkeypatch.setitem(departments.RUNNERS, "finance", boom)
     update = make_head_node("finance")(new_state("r9", "x"))
     result = DepartmentResult.from_state(update["department_result"])

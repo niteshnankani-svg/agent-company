@@ -1,6 +1,7 @@
 import pytest
 
 import cache as cache_module
+import extraction
 
 
 @pytest.fixture(autouse=True)
@@ -9,5 +10,10 @@ def isolate_process_wide_state(monkeypatch):
     for name in ("TYPESAFE_API_KEY", "EMBEDDING_PROVIDER", "ROUTER_MIN_CONFIDENCE"):
         monkeypatch.delenv(name, raising=False)
     cache_module.set_cache(None, "disabled for tests")  # individual tests install their own
+
+    def no_model(text, defs):
+        raise RuntimeError("no extraction model in tests; a test that needs one installs a fake")
+
+    monkeypatch.setattr(extraction, "_call_model", no_model)
     yield
     cache_module.set_cache(None, "disabled for tests")

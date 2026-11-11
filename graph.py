@@ -29,6 +29,7 @@ def make_head_node(department: str):
             state["raw_input"],
             state.get("department_fields"),
             state.get("sub_department"),
+            bool(state.get("follow_up")),
         )
         return result_update(state, node_name, result)
 
@@ -37,10 +38,18 @@ def make_head_node(department: str):
 
 
 def orchestrator_entry_node(state: GraphState) -> dict:
-    """Skip classification when the caller supplied an explicit department sequence."""
+    """Skip classification for a sequence, or for a follow-up form the system generated itself."""
     if state.get("department_sequence"):
         return {
             "audit_trail": [audit_entry(state, "orchestrator", "sequential_request")]
+        }
+    pinned = state.get("pinned_department")
+    if pinned in HEAD_NODES:
+        return {
+            "request_type": pinned,
+            "audit_trail": [
+                audit_entry(state, "orchestrator", "routed", department=pinned, source="follow_up")
+            ],
         }
     return orchestrator_node(state)
 

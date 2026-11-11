@@ -41,8 +41,9 @@ AP = dict(
 
 
 def test_finance_without_a_path_asks_which_one():
-    r = assert_valid(run_finance("pay the vendor", {}, None))
+    r = assert_valid(run_finance("pay the vendor", {}, None))  # no model available in tests
     assert r.status == "needs_more_info" and r.missing_fields == ["sub_department"]
+    assert r.follow_up.fields[0].kind == "choice" and set(r.follow_up.fields[0].choices) == {"ar", "ap"}
 
 
 def test_finance_ar_valid_goes_to_a_human_with_the_record_as_evidence():
@@ -90,9 +91,15 @@ def test_finance_cross_field_error_is_attributed_to_the_wrong_field():
     assert r.status == "needs_more_info" and r.missing_fields == ["is_round_number"]
 
 
-def test_finance_a_string_where_a_number_belongs_is_a_field_error_not_a_crash():
-    r = assert_valid(run_finance("credit check", {**AR, "age": "34"}, "ar"))
+def test_finance_a_non_number_where_a_number_belongs_is_a_field_error_not_a_crash():
+    r = assert_valid(run_finance("credit check", {**AR, "age": "thirty-four"}, "ar"))
     assert r.status == "needs_more_info" and r.missing_fields == ["age"]
+    assert r.follow_up.fields[0].problem == "Please enter a number."
+
+
+def test_finance_form_values_arriving_as_strings_are_accepted():
+    r = assert_valid(run_finance("credit check", {**AR, "age": "34", "income": "65,000"}, "ar"))
+    assert r.status == "needs_human" and r.evidence[0].data["input"]["age"] == 34
 
 
 # ----------------------------------------------------------------------- hr

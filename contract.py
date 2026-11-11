@@ -8,7 +8,8 @@ Rules the model enforces, so a department cannot get them wrong silently:
 
 * ``answered``        -> there is an answer AND at least one piece of evidence.
 * ``needs_human``     -> there is a machine-readable ``reason`` for the reviewer.
-* ``needs_more_info`` -> ``missing_fields`` says exactly what to ask the user.
+* ``needs_more_info`` -> ``missing_fields`` says exactly what to ask the user, and
+                         ``follow_up`` (optional) describes the form to show.
 * ``failed``          -> ``error`` says, in words, what broke.
 * confidence is declared with a *kind*. ``none`` means the department has no
   real number and must not invent one.
@@ -76,6 +77,42 @@ class Confidence(BaseModel):
 
 NO_CONFIDENCE = Confidence(kind="none", value=None)
 
+FieldKind = Literal["number", "integer", "boolean", "choice", "text"]
+
+
+class FieldSpec(BaseModel):
+    """One question on a follow-up form. The backend owns this, so no UI hard-codes a department's fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    label: str
+    kind: FieldKind
+    help: Optional[str] = None
+    choices: Optional[dict[str, str]] = None  # value -> label, for kind "choice"
+    # Set when the user already gave a value for this field and it was not acceptable.
+    problem: Optional[str] = None
+
+    @model_validator(mode="after")
+    def choice_has_choices(self) -> "FieldSpec":
+        if self.kind == "choice" and not self.choices:
+            raise ValueError("a 'choice' field needs choices")
+        return self
+
+
+class FollowUp(BaseModel):
+    """What the UI needs to ask for the missing details and send them back.
+
+    ``collected`` is what the system already understood. The UI returns it, merged
+    with the user's answers, in the next request.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    sub_department: Optional[str] = None
+    collected: dict[str, Any] = Field(default_factory=dict)
+    fields: list[FieldSpec]
+
 
 class DepartmentResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -90,6 +127,7 @@ class DepartmentResult(BaseModel):
     # Why the request is not simply answered: a short code a human or a UI can
     # act on, e.g. "security_incident_review". Required for needs_human.
     reason: Optional[str] = None
+    follow_up: Optional[FollowUp] = None
 
     @model_validator(mode="after")
     def status_invariants(self) -> "DepartmentResult":
@@ -110,8 +148,10 @@ class DepartmentResult(BaseModel):
         elif s == "failed":
             if not (self.error and self.error.strip()):
                 raise ValueError("status 'failed' requires an error message")
-        if s != "needs_more_info" and self.missing_fields:
-            raise ValueError("missing_fields is only valid with status 'needs_more_info'")
+        if s != "needs_more_info" and (self.missing_fields or self.follow_up):
+            raise ValueError("missing_fields and follow_up are only valid with status 'needs_more_info'")
+        if self.follow_up and [f.name for f in self.follow_up.fields] != self.missing_fields:
+            raise ValueError("follow_up.fields must describe exactly missing_fields, in order")
         return self
 
     # --- state boundary -------------------------------------------------

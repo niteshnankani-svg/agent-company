@@ -1,6 +1,6 @@
 """The five departments behind one uniform call.
 
-Every runner has the signature ``(raw_input, fields, sub_department) -> DepartmentResult``
+Every runner has the signature ``(raw_input, fields, sub_department, follow_up) -> DepartmentResult``
 and touches no graph state. The graph turns a result into a state update; tests
 and the sequential runner call these directly.
 """
@@ -16,21 +16,25 @@ from legal_compliance import run_legal
 
 log = logging.getLogger(__name__)
 
-Runner = Callable[[str, Optional[dict], Optional[str]], DepartmentResult]
+Runner = Callable[[str, Optional[dict], Optional[str], bool], DepartmentResult]
 
 RUNNERS: dict[str, Runner] = {
     "finance": run_finance,
-    "hr_complaints": lambda raw, fields, sub: run_hr(raw, fields),
-    "backend_ticketing": lambda raw, fields, sub: run_backend(raw),
-    "export_compliance": lambda raw, fields, sub: run_export(raw, fields),
-    "legal_compliance": lambda raw, fields, sub: run_legal(raw, fields),
+    "hr_complaints": lambda raw, fields, sub, follow_up: run_hr(raw, fields),
+    "backend_ticketing": lambda raw, fields, sub, follow_up: run_backend(raw),
+    "export_compliance": lambda raw, fields, sub, follow_up: run_export(raw, fields),
+    "legal_compliance": lambda raw, fields, sub, follow_up: run_legal(raw, fields),
 }
 
 DEPARTMENT_NAMES = tuple(RUNNERS)
 
 
 def run_department(
-    name: str, raw_input: str, fields: Optional[dict], sub_department: Optional[str] = None
+    name: str,
+    raw_input: str,
+    fields: Optional[dict],
+    sub_department: Optional[str] = None,
+    follow_up: bool = False,
 ) -> DepartmentResult:
     """Run one department; an unexpected exception becomes a ``failed`` result.
 
@@ -44,7 +48,7 @@ def run_department(
             department=name, status="failed", error=f"no department named '{name}'"
         )
     try:
-        return runner(raw_input, fields, sub_department)
+        return runner(raw_input, fields, sub_department, follow_up)
     except Exception as exc:
         log.exception("department %s raised unexpectedly", name)
         return DepartmentResult(

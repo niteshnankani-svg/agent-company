@@ -18,6 +18,9 @@ class GraphState(TypedDict):
     departments_activated: list[str]
     llm_budget_remaining: int
     # Caller-supplied multi-department run (kept until Phase 2 revisits it).
+    # Set only by a follow-up form the system itself generated: skip routing, go to this department.
+    pinned_department: Optional[str]
+    follow_up: bool
     department_sequence: Optional[list[str]]
     department_fields_by_dept: Optional[dict]
     department_history: Annotated[list[dict], operator.add]
@@ -41,6 +44,8 @@ def new_state(
     sub_department: Optional[str] = None,
     department_sequence: Optional[list[str]] = None,
     department_fields_by_dept: Optional[dict] = None,
+    pinned_department: Optional[str] = None,
+    follow_up: bool = False,
 ) -> GraphState:
     return {
         "request_id": request_id,
@@ -48,6 +53,8 @@ def new_state(
         "request_type": None,
         "departments_activated": [],
         "llm_budget_remaining": llm_budget,
+        "pinned_department": pinned_department,
+        "follow_up": follow_up,
         "department_sequence": department_sequence,
         "department_fields_by_dept": department_fields_by_dept,
         "department_history": [],
