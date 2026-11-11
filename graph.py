@@ -1,9 +1,11 @@
 """The LangGraph wiring. Every node returns a partial state update; none mutate state."""
 from langgraph.graph import END, StateGraph
+from langgraph.types import interrupt
 
 from cache import get_cache, why_not_cacheable
 from contract import DepartmentResult
 from departments import run_department
+from review import HumanDecision, apply_decision, has_draft, review_payload
 from orchestrator import orchestrator_node
 from state import GraphState, audit_entry, new_state, result_update
 from verifier import verifier_node
@@ -87,7 +89,7 @@ def route_after_orchestrator(state: GraphState) -> str:
         return "cache_lookup"
     # "human_escalation" (the router could not decide or was unreachable) and any
     # unexpected value both go to a person, explicitly, by name.
-    return "human_review"
+    return "queue_review"
 
 
 def cache_key(department: str, state: GraphState) -> tuple[str, str]:
@@ -153,44 +155,67 @@ def cache_store_node(state: GraphState) -> dict:
 
 
 def route_after_verifier(state: GraphState) -> str:
-    """pass -> remember it; retry -> the same department, now with feedback; fail -> a person.
+    """pass -> remember it (or queue it for a person); retry -> the same department with feedback; fail -> a person.
 
-    On "fail" the verifier has already withdrawn the answer (it is ``needs_human`` by now).
+    On "fail" the verifier has already withdrawn the answer (it is ``needs_human`` by now). A result a
+    department itself marked ``needs_human`` also goes to a person: that is the whole point of the status.
     """
     outcome = state["verifier_result"]
     if outcome == "pass":
-        return "cache_store"
+        held = state.get("department_result") or {}
+        return "queue_review" if held.get("status") == "needs_human" else "cache_store"
     if outcome == "retry":
         # Unknown/unset active_department fails closed to human review.
-        return HEAD_NODES.get(state.get("active_department"), "human_review")
-    return "human_review"
+        return HEAD_NODES.get(state.get("active_department"), "queue_review")
+    return "queue_review"
 
 
-def human_review_node(state: GraphState) -> dict:
-    """Where every request a machine cannot finish ends up.
+def make_queue_review_node(reviews):
+    """Put a run that needs a person into the review inbox, and make sure its held result is in state."""
 
-    Reached when the router could not pick a department, or the verifier withdrew an answer
-    (the result it left behind is already ``needs_human``, with the draft and its findings).
-    It always yields a ``needs_human`` result with a reason. Today it records the hand-off and
-    ends the run; Phase 5 makes it pause the run with ``interrupt()`` until a person decides.
-    """
-    reason = state.get("escalation_reason") or "unspecified"
-    update: dict = {
-        "escalation_reason": reason,
-        "audit_trail": [audit_entry(state, "human_review", "needs_human", reason=reason)],
+    def queue_review_node(state: GraphState, config) -> dict:
+        raw = state.get("department_result")
+        update: dict = {}
+        if raw:
+            held = DepartmentResult.from_state(raw)
+        else:
+            held = DepartmentResult(
+                department=state.get("active_department") or "orchestrator",
+                status="needs_human",
+                reason=state.get("escalation_reason") or "unspecified",
+            )
+            update["department_result"] = held.to_state()
+            update["active_department"] = held.department
+        reason = state.get("escalation_reason") or held.reason or "unspecified"
+        update["escalation_reason"] = reason
+        update["audit_trail"] = [audit_entry(state, "queue_review", "awaiting_review", reason=reason, department=held.department)]
+        if reviews is not None:
+            reviews.add(
+                config["configurable"]["thread_id"], state["request_id"], held.department,
+                reason, state["raw_input"], has_draft(held),
+            )
+        return update
+
+    return queue_review_node
+
+
+def human_review_node(state: GraphState, config) -> dict:
+    """Pause the run until a person decides. The run is checkpointed here and can resume later,
+    on another worker, even after a restart. Whatever the person decides becomes the final result."""
+    held = DepartmentResult.from_state(state["department_result"])
+    raw = interrupt(review_payload(config["configurable"]["thread_id"], held, state["raw_input"]))
+    decision = HumanDecision.model_validate(raw)
+    final, verification = apply_decision(held, decision)
+    return {
+        "department_result": final.to_state(),
+        "verification": verification,
+        "audit_trail": [
+            audit_entry(state, "human_review", "resolved", decision=decision.action, reviewer=decision.reviewer)
+        ],
     }
-    if not state.get("department_result"):
-        result = DepartmentResult(
-            department=state.get("active_department") or "orchestrator",
-            status="needs_human",
-            reason=reason,
-        )
-        update["department_result"] = result.to_state()
-        update["active_department"] = result.department
-    return update
 
 
-def build_graph():
+def build_graph(checkpointer=None, reviews=None):
     graph = StateGraph(GraphState)
     graph.add_node("orchestrator", orchestrator_entry_node)
     graph.add_node("sequence_step", sequence_step)
@@ -199,6 +224,7 @@ def build_graph():
         graph.add_node(node_name, make_head_node(department))
     graph.add_node("verifier", verifier_node)
     graph.add_node("cache_store", cache_store_node)
+    graph.add_node("queue_review", make_queue_review_node(reviews))
     graph.add_node("human_review", human_review_node)
 
     graph.set_entry_point("orchestrator")
@@ -208,7 +234,7 @@ def build_graph():
         {
             "sequence_step": "sequence_step",
             "cache_lookup": "cache_lookup",
-            "human_review": "human_review",
+            "queue_review": "queue_review",
         },
     )
     graph.add_conditional_edges(
@@ -229,12 +255,13 @@ def build_graph():
         {
             "cache_store": "cache_store",
             **{node: node for node in HEAD_NODES.values()},
-            "human_review": "human_review",
+            "queue_review": "queue_review",
         },
     )
     graph.add_edge("cache_store", END)
+    graph.add_edge("queue_review", "human_review")
     graph.add_edge("human_review", END)
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def build_initial_state(

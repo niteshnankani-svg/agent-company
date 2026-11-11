@@ -46,7 +46,17 @@ const CONFIDENCE_TEXT: Record<string, string> = {
   calibrated_probability: "A measured probability that the answer is right.",
 };
 
-export default function ResultPanel({ response }: { response: AgentResponse }) {
+export default function ResultPanel({
+  response,
+  onCheck,
+  checking,
+  checkedStillPending,
+}: {
+  response: AgentResponse;
+  onCheck?: () => void;
+  checking?: boolean;
+  checkedStillPending?: boolean;
+}) {
   const { result } = response;
   const meta = statusMeta(result.status);
   const reason = reasonText(result.reason);
@@ -101,6 +111,26 @@ export default function ResultPanel({ response }: { response: AgentResponse }) {
                 <Markdown text={result.answer} />
               </div>
             )}
+            {response.pending_review && (
+              <div data-testid="pending-review" className="flex flex-wrap items-center gap-3 font-mono text-[11.5px]" style={{ color: "var(--text-tertiary)" }}>
+                <span>
+                  Reference: <span data-testid="run-reference" style={{ color: "var(--text-secondary)" }}>{response.run_id}</span>
+                </span>
+                {onCheck && (
+                  <button
+                    type="button"
+                    data-testid="check-decision"
+                    onClick={onCheck}
+                    disabled={checking}
+                    className="rounded border px-2.5 py-1 uppercase tracking-wider transition-colors disabled:opacity-40"
+                    style={{ borderColor: "var(--border-hairline-strong)", color: "var(--text-secondary)" }}
+                  >
+                    {checking ? "checking…" : "check for a decision"}
+                  </button>
+                )}
+                {checkedStillPending && <span data-testid="still-waiting">Still waiting for a person to decide.</span>}
+              </div>
+            )}
           </>
         )}
 
@@ -119,7 +149,16 @@ export default function ResultPanel({ response }: { response: AgentResponse }) {
           </div>
         )}
 
-        {result.status === "failed" && (
+        {result.status === "failed" && result.reason === "declined_by_reviewer" && (
+          <div data-testid="result-declined" className="text-[14px]" style={{ color: "var(--text-primary)" }}>
+            A person reviewed this request and declined it.
+            <div className="mt-1 text-[13px]" style={{ color: "var(--text-secondary)" }}>
+              {result.error?.replace(/^Declined by a reviewer: /, "")}
+            </div>
+          </div>
+        )}
+
+        {result.status === "failed" && result.reason !== "declined_by_reviewer" && (
           <div data-testid="result-failed" className="text-[14px]" style={{ color: "var(--text-primary)" }}>
             This could not be completed because a service it depends on failed.
             <div className="mt-1 font-mono text-[12px]" style={{ color: "var(--text-secondary)" }}>

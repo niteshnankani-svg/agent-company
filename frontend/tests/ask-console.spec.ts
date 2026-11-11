@@ -71,6 +71,37 @@ test("needs_human: says a person must decide and why, in plain words", async ({ 
   await expect(page.getByTestId("result-needs-human")).toContainText("Security Team");
 });
 
+test("a request passed to a person shows a reference, and the user can check whether they have decided", async ({ page, request }) => {
+  await ask(page, "human review please");
+  const ref = page.getByTestId("run-reference");
+  await expect(ref).toHaveText(/^[0-9a-f]{32}$/);
+  await page.getByTestId("check-decision").click();
+  await expect(page.getByTestId("still-waiting")).toBeVisible();
+  await expect(page.getByTestId("result-status")).toHaveAttribute("data-status", "needs_human");
+
+  await request.get(`${MOCK}/__resolve/${await ref.innerText()}`); // a reviewer decides
+  await page.getByTestId("check-decision").click();
+  await expect(page.getByTestId("result-status")).toHaveAttribute("data-status", "answered");
+  await expect(page.getByTestId("result-answer")).toContainText("A person reviewed this");
+  await expect(page.getByTestId("result-verification")).toContainText("Answered by asha");
+  await expect(page.getByTestId("pending-review")).toHaveCount(0);
+});
+
+test("a request a person declined is shown as declined, not as a service failure", async ({ page }) => {
+  await ask(page, "declined something");
+  await expect(page.getByTestId("result-declined")).toContainText("declined it");
+  await expect(page.getByTestId("result-declined")).toContainText("out of scope");
+  await expect(page.getByTestId("result-failed")).toHaveCount(0);
+});
+
+test("the console exposes only a read-only status lookup, never the reviewer actions", async ({ request }) => {
+  expect((await request.get("/api/agent/runs/not-a-reference")).status()).toBe(400);
+  expect((await request.get(`/api/agent/runs/${"0".repeat(32)}`)).status()).toBe(404);
+  expect((await request.post(`/api/agent/runs/${"0".repeat(32)}`, { data: {} })).status()).toBe(405);
+  expect((await request.get("/api/agent/reviews")).status()).toBe(404);
+  expect((await request.post("/api/agent/reviews/x/resume", { data: {} })).status()).toBe(404);
+});
+
 test("needs_more_info without a form spec: lists the missing fields", async ({ page }) => {
   await ask(page, "more-list credit check");
   await expect(page.getByTestId("result-status")).toHaveAttribute("data-status", "needs_more_info");

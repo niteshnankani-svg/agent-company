@@ -5,6 +5,8 @@ import sys
 
 import pytest
 
+from helpers import invoke_graph
+
 import orchestrator
 from clients import get_typesafe_client, typesafe_client_kwargs
 from contract import DepartmentResult
@@ -55,10 +57,10 @@ def test_a_transient_server_error_is_retried_then_surfaces_as_an_exception():
 def test_with_no_key_and_no_llm_budget_a_request_goes_to_a_human_not_a_crash():
     """Uses the real local_classify (no mocks): the missing key must be handled, not raised."""
     get_typesafe_client.cache_clear()
-    final = build_graph().invoke(new_state("rt1", "pay the vendor invoice", llm_budget=0))
+    final = invoke_graph(new_state("rt1", "pay the vendor invoice", llm_budget=0))
     result = DepartmentResult.from_state(final["department_result"])
     assert result.status == "needs_human" and result.reason == "classifier_unavailable"
-    assert [e["node"] for e in final["audit_trail"]] == ["orchestrator", "human_review"]
+    assert [e["node"] for e in final["audit_trail"]] == ["orchestrator", "queue_review"]
 
 
 # ----------------------------------------------------------------- decision logic

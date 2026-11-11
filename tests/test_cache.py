@@ -11,7 +11,7 @@ from cache import (
 )
 from contract import DepartmentResult, Evidence
 from graph import build_graph
-from helpers import supports_everything
+from helpers import supports_everything, invoke_graph
 from state import new_state
 
 
@@ -224,7 +224,7 @@ def legal_graph_run(monkeypatch, text, calls, request_id="g"):
         return {"answer": f"Answer to {question}", "citations": [CIT]}
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: ("legal_compliance", 0.9))
     monkeypatch.setattr(legal_compliance, "ask_legal_question", fake)
-    return build_graph().invoke(new_state(request_id, text))
+    return invoke_graph(new_state(request_id, text))
 
 
 def nodes(final): return [(e["node"], e["status"]) for e in final["audit_trail"]]
@@ -253,7 +253,7 @@ def test_graph_never_caches_or_looks_up_hr_finance_backend_export(monkeypatch):
     emb = WordEmbedder()
     cache_module.set_cache(make(embedder=emb))
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: ("finance", 0.9))
-    final = build_graph().invoke(new_state("f1", "pay the vendor invoice"))
+    final = invoke_graph(new_state("f1", "pay the vendor invoice"))
     statuses = dict(nodes(final))
     assert statuses["cache_lookup"] == "skipped" and statuses["cache_store"] == "not_cached"
     assert emb.calls == 0 and len(cache_module.get_cache()[0]) == 0
@@ -271,7 +271,7 @@ def test_graph_does_not_cache_a_failed_or_escalated_answer(monkeypatch):
 
     async def down(*a, **k): return {"error": "timeout", "detail": "60s"}
     monkeypatch.setattr(legal_compliance, "ask_legal_question", down)
-    final = build_graph().invoke(new_state("c1", Q))
+    final = invoke_graph(new_state("c1", Q))
     assert dict(nodes(final))["cache_store"] == "not_cached" and len(cache_module.get_cache()[0]) == 0
 
 
@@ -280,7 +280,7 @@ def test_graph_does_not_cache_sequential_runs(monkeypatch):
     supports_everything(monkeypatch)
     async def fake(*a, **k): return {"answer": "A", "citations": [CIT]}
     monkeypatch.setattr(legal_compliance, "ask_legal_question", fake)
-    final = build_graph().invoke(new_state("s1", Q, department_sequence=["legal_compliance"]))
+    final = invoke_graph(new_state("s1", Q, department_sequence=["legal_compliance"]))
     assert dict(nodes(final))["cache_store"] == "skipped" and len(cache_module.get_cache()[0]) == 0
 
 

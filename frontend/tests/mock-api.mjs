@@ -5,6 +5,14 @@ import http from "node:http";
 
 const PORT = Number(process.env.MOCK_API_PORT || 8099);
 let last = null;
+let counter = 0;
+const runs = new Map(); // run_id -> { response, resolved }
+const newRunId = () => (++counter).toString(16).padStart(32, "0");
+const decided = (response) => ({
+  ...response, pending_review: false, needs_human: false,
+  result: { ...response.result, status: "answered", answer: "A person reviewed this and replied: please contact IT.", reason: null, evidence: [{ source: "human_review", text: null, data: { decision: "answer", reviewer: "asha" } }] },
+  verification: { status: "human_provided", check: "human_review", reviewer: "asha" },
+});
 
 const trail = (id, extra = []) => [
   { node: "orchestrator", status: "routed", request_id: id, department: "legal_compliance", source: "local_model" },
@@ -71,6 +79,8 @@ function respond(text, id) {
     }));
   if (text.includes("human"))
     return reply(id, base("backend_ticketing", "needs_human", { reason: "security_incident_review" }));
+  if (text.includes("declined"))
+    return reply(id, base("backend_ticketing", "failed", { reason: "declined_by_reviewer", error: "Declined by a reviewer: out of scope" }));
   if (text.includes("more-list"))
     return reply(id, base("finance", "needs_more_info", { missing_fields: ["credit_score", "loan_amount"], reason: "missing_fields" }));
   if (text.includes("failed"))
@@ -80,6 +90,17 @@ function respond(text, id) {
 
 http.createServer((req, res) => {
   if (req.url === "/health") { res.writeHead(200, { "Content-Type": "application/json" }); return res.end('{"status":"ok"}'); }
+  const run = req.url.match(/^\/runs\/([0-9a-f]{32})$/);
+  if (run) {
+    const entry = runs.get(run[1]);
+    res.writeHead(entry ? 200 : 404, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(entry ? (entry.resolved ? decided(entry.response) : entry.response) : { detail: "No such run." }));
+  }
+  const resolve = req.url.match(/^\/__resolve\/([0-9a-f]{32})$/);
+  if (resolve) {
+    if (runs.has(resolve[1])) runs.get(resolve[1]).resolved = true;
+    res.writeHead(200); return res.end("ok");
+  }
   if (req.url === "/__last") { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify(last)); }
   if (req.url === "/request" && req.method === "POST") {
     let body = "";
@@ -90,8 +111,12 @@ http.createServer((req, res) => {
         res.writeHead(500, { "Content-Type": "application/json" });
         return res.end(JSON.stringify({ detail: "Request processing failed: SECRET_UPSTREAM_TRACEBACK at /srv/app/graph.py" }));
       }
+      const response = last.follow_up ? respondFollowUp(last) : respond(last.raw_input, last.request_id);
+      response.run_id = newRunId();
+      response.pending_review = response.result.status === "needs_human";
+      runs.set(response.run_id, { response, resolved: false });
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(last.follow_up ? respondFollowUp(last) : respond(last.raw_input, last.request_id)));
+      res.end(JSON.stringify(response));
     });
     return;
   }

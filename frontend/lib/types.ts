@@ -52,12 +52,18 @@ export interface AuditTrailEntry {
 }
 
 export interface AgentResponse {
+  run_id: string; // the reference for this request; used to check for a person's decision
   request_id: string;
+  pending_review: boolean; // true while a person has yet to decide
   result: DepartmentResult;
   needs_human: boolean;
   // How the answer was checked against its evidence. `unchecked` means nobody checked it, and the
   // UI must say so. `check` says why (rule_based, no_source_material, checker_unavailable, claims, cached...).
-  verification: { status: "verified" | "unchecked" | "not_applicable" | "failed" | "retrying"; check: string } | null;
+  verification: {
+    status: "verified" | "unchecked" | "not_applicable" | "failed" | "retrying" | "human_approved" | "human_provided";
+    check: string;
+    reviewer?: string;
+  } | null;
   escalation_reason: string | null;
   department_history: { department: string; result: DepartmentResult }[];
   audit_trail: AuditTrailEntry[];

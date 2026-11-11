@@ -59,11 +59,19 @@ export const REASON_TEXT: Record<string, string> = {
     "The answer was checked against its evidence and some statements were not supported, so it was not released. The draft is shown for the reviewer.",
   verification_unavailable: "The check against the evidence could not run, so the answer was not released.",
   invalid_result: "The system produced a result it could not use.",
+  declined_by_reviewer: "A person reviewed this request and declined it.",
 };
 
 // How to describe the verification state to a user. `unchecked` is never presented as a pass.
-export function verificationText(v: { status: string; check: string } | null | undefined): { text: string; tone: "good" | "warn" } | null {
+export function verificationText(v: { status: string; check: string; reviewer?: string } | null | undefined): { text: string; tone: "good" | "warn" } | null {
   if (!v || v.status === "not_applicable" || v.status === "failed" || v.status === "retrying") return null;
+  if (v.status === "human_approved" || v.status === "human_provided") {
+    const who = v.reviewer ? ` by ${v.reviewer}` : "";
+    return {
+      text: v.status === "human_approved" ? `Reviewed and approved${who}. This was decided by a person, not checked automatically.` : `Answered${who || " by a person"}.`,
+      tone: "good",
+    };
+  }
   if (v.status === "verified") {
     return {
       text: v.check === "cached" ? "Checked against its evidence when first answered; this answer was reused." : "Checked: every statement is supported by the evidence below.",

@@ -8,11 +8,11 @@ import legal_compliance
 import orchestrator
 from contract import DepartmentResult
 from graph import (
-    HEAD_NODES, build_graph, human_review_node, make_head_node,
+    HEAD_NODES, build_graph, make_head_node, make_queue_review_node,
     orchestrator_entry_node, route_after_orchestrator, route_after_sequence_step,
     route_after_verifier, sequence_step,
 )
-from helpers import supports_everything
+from helpers import supports_everything, invoke_graph
 from state import audit_entry, new_state
 from verifier import verifier_node
 
@@ -26,10 +26,10 @@ def returns(value):
     return fake
 
 
-def assert_pure(node, state):
+def assert_pure(node, state, *args):
     """A node must return a dict update and leave the state it was given untouched."""
     before = copy.deepcopy(state)
-    update = node(state)
+    update = node(state, *args)
     assert isinstance(update, dict)
     assert state == before, "node mutated its input state"
     assert set(update) <= set(state), f"update has keys not in GraphState: {set(update) - set(state)}"
@@ -96,22 +96,39 @@ def test_sequence_step_does_not_pop_the_callers_list():
     assert update["department_history"][0]["department"] == "finance"
 
 
-def test_human_review_node_is_pure_and_always_yields_needs_human_with_a_reason():
-    state = new_state("r7", "x")
+class RecordingInbox:
+    def __init__(self): self.added = []
+    def add(self, *args): self.added.append(args)
+
+
+CONFIG = {"configurable": {"thread_id": "run-123"}}
+
+
+def test_queue_review_builds_the_held_result_and_files_it_in_the_inbox():
+    inbox = RecordingInbox()
+    state = new_state("r7", "something odd")
     state["escalation_reason"] = "request_not_classified"
-    update = assert_pure(human_review_node, state)
+    update = assert_pure(make_queue_review_node(inbox), state, CONFIG)
     result = DepartmentResult.from_state(update["department_result"])
     assert result.status == "needs_human" and result.reason == "request_not_classified"
-    assert update["audit_trail"][0]["node"] == "human_review"
+    assert update["audit_trail"][0]["node"] == "queue_review" and update["audit_trail"][0]["status"] == "awaiting_review"
+    assert inbox.added == [("run-123", "r7", "orchestrator", "request_not_classified", "something odd", False)]
 
 
-def test_human_review_after_a_withdrawn_answer_keeps_the_held_result_and_says_why():
+def test_queue_review_keeps_a_departments_own_held_result_and_notes_whether_there_is_a_draft():
+    inbox = RecordingInbox()
     state = new_state("r7b", "x")
     held = DepartmentResult(department="legal_compliance", status="needs_human", reason="verification_failed", answer="draft").to_state()
     state.update(department_result=held, escalation_reason="verification_failed", active_department="legal_compliance")
-    update = assert_pure(human_review_node, state)
-    assert "department_result" not in update  # the department's own held result is left in place
-    assert update["escalation_reason"] == "verification_failed"
+    update = assert_pure(make_queue_review_node(inbox), state, CONFIG)
+    assert "department_result" not in update  # left exactly as the department/verifier left it
+    assert inbox.added[0][2:] == ("legal_compliance", "verification_failed", "x", True)
+
+
+def test_queue_review_takes_the_reason_from_the_departments_result_when_none_was_set():
+    state = new_state("r7c", "x")
+    state["department_result"] = DepartmentResult(department="backend_ticketing", status="needs_human", reason="security_incident_review").to_state()
+    assert make_queue_review_node(None)(state, CONFIG)["escalation_reason"] == "security_incident_review"
 
 
 def test_an_unexpected_exception_in_a_department_becomes_failed_not_a_crash(monkeypatch):
@@ -130,7 +147,7 @@ def test_routing_sends_every_department_through_the_cache_and_everything_else_to
     for dept in HEAD_NODES:
         assert route_after_orchestrator({"request_type": dept}) == "cache_lookup"
     for other in ("human_escalation", None, "astrology"):
-        assert route_after_orchestrator({"request_type": other}) == "human_review"
+        assert route_after_orchestrator({"request_type": other}) == "queue_review"
     assert route_after_orchestrator({"request_type": "finance", "department_sequence": ["x"]}) == "sequence_step"
 
 
@@ -140,11 +157,13 @@ def test_sequence_routing():
 
 
 def test_verifier_routing_pass_retry_and_fail():
-    assert route_after_verifier({"verifier_result": "pass"}) == "cache_store"
+    assert route_after_verifier({"verifier_result": "pass", "department_result": {"status": "answered"}}) == "cache_store"
+    # a result a department itself marked needs_human always goes to a person
+    assert route_after_verifier({"verifier_result": "pass", "department_result": {"status": "needs_human"}}) == "queue_review"
     for dept, node in HEAD_NODES.items():
         assert route_after_verifier({"verifier_result": "retry", "active_department": dept}) == node
-    assert route_after_verifier({"verifier_result": "retry", "active_department": None}) == "human_review"
-    assert route_after_verifier({"verifier_result": "fail"}) == "human_review"
+    assert route_after_verifier({"verifier_result": "retry", "active_department": None}) == "queue_review"
+    assert route_after_verifier({"verifier_result": "fail"}) == "queue_review"
 
 
 def test_entry_node_skips_classification_for_an_explicit_sequence(monkeypatch):
@@ -155,7 +174,7 @@ def test_entry_node_skips_classification_for_an_explicit_sequence(monkeypatch):
 
 # ------------------------------------------------------------- compiled graph, e2e
 def run(state):
-    return build_graph().invoke(state)
+    return invoke_graph(state)
 
 
 def test_end_to_end_legal_answered(monkeypatch):
@@ -190,13 +209,13 @@ def test_end_to_end_service_down_is_a_failed_result_and_is_not_retried(monkeypat
     assert len(calls) == 1, "a failed department must not be blindly re-run"
 
 
-def test_end_to_end_unsure_classifiers_go_to_the_human_node(monkeypatch):
+def test_end_to_end_unsure_classifiers_go_to_the_review_queue(monkeypatch):
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: (None, 0.0))
     monkeypatch.setattr(orchestrator, "llm_classify", lambda text, budget: (None, "unsure", budget - 1))
     final = run(new_state("e4", "asdkjfh aslkdjf help"))
     result = DepartmentResult.from_state(final["department_result"])
     assert result.status == "needs_human" and result.reason == "request_not_classified"
-    assert [e["node"] for e in final["audit_trail"]] == ["orchestrator", "human_review"]
+    assert [e["node"] for e in final["audit_trail"]] == ["orchestrator", "queue_review"]
     assert final["escalation_reason"] == "request_not_classified"
 
 
@@ -232,7 +251,7 @@ def test_api_response_is_the_contract(monkeypatch):
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: ("legal_compliance", 0.9))
     monkeypatch.setattr(legal_compliance, "ask_legal_question", returns({"answer": "Section 357 ...", "citations": [CIT]}))
     body = TestClient(api.app).post("/request", json={"request_id": "a1", "raw_input": "What is Section 357 of BNS about?"}).json()
-    assert set(body) == {"request_id", "result", "needs_human", "verification", "escalation_reason", "department_history", "audit_trail"}
+    assert set(body) == {"run_id", "request_id", "result", "needs_human", "pending_review", "verification", "escalation_reason", "department_history", "audit_trail"}
     assert DepartmentResult.model_validate(body["result"]).status == "answered"
     assert body["needs_human"] is False
 

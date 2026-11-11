@@ -1,5 +1,7 @@
 """Finance from a plain sentence plus a follow-up form: AR and AP, end to end."""
 import pytest
+
+from helpers import invoke_graph
 from pydantic import ValidationError
 
 import extraction
@@ -235,11 +237,11 @@ def test_graph_round_trip_sentence_then_form_without_routing_twice(monkeypatch):
     calls = model_says(monkeypatch, AP_MODEL)
     routed = []
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: routed.append(t) or ("finance", 0.9))
-    first = build_graph().invoke(new_state("t1", AP_SENTENCE))
+    first = invoke_graph(new_state("t1", AP_SENTENCE))
     r1 = DepartmentResult.from_state(first["department_result"])
     assert r1.status == "needs_more_info" and r1.follow_up.sub_department == "ap" and len(routed) == 1
 
-    second = build_graph().invoke(new_state(
+    second = invoke_graph(new_state(
         "t2", AP_SENTENCE, department_fields={**r1.follow_up.collected, **FORM_ANSWERS},
         sub_department=r1.follow_up.sub_department, pinned_department=r1.department, follow_up=True))
     r2 = DepartmentResult.from_state(second["department_result"])

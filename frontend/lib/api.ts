@@ -33,6 +33,25 @@ export async function sendAgentRequest(body: AgentRequestBody): Promise<AgentRes
   return (await res.json()) as AgentResponse;
 }
 
+export async function fetchRun(runId: string): Promise<AgentResponse> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}`, { cache: "no-store" });
+  } catch {
+    throw new ApiError("Could not reach the console server. Try again.");
+  }
+  if (!res.ok) {
+    let detail: string | undefined;
+    try {
+      detail = (await res.json())?.detail;
+    } catch {
+      // not JSON
+    }
+    throw new ApiError(detail || `Request failed (HTTP ${res.status}).`, res.status);
+  }
+  return (await res.json()) as AgentResponse;
+}
+
 export async function checkHealth(): Promise<boolean> {
   try {
     const res = await fetch("/api/agent/health", { cache: "no-store" });

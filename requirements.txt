@@ -1,6 +1,7 @@
 # Core: orchestrator, Finance, Export, Backend departments
 
 langgraph
+langgraph-checkpoint-sqlite
 pydantic>=2
 anthropic[bedrock]
 boto3

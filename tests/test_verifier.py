@@ -1,6 +1,8 @@
 """The verifier: claims checked against evidence, one retry with feedback, and no unverified 'answered'."""
 import pytest
 
+from helpers import invoke_graph
+
 import export_compliance
 import hr_complaints
 import legal_compliance
@@ -302,7 +304,7 @@ def run_legal_graph(monkeypatch, checker_replies, answers):
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: ("legal_compliance", 0.9))
     monkeypatch.setattr(legal_compliance, "ask_legal_question", fake)
     calls = sequence(monkeypatch, *checker_replies)
-    final = build_graph().invoke(new_state("g1", "What is Section 357 of BNS about?"))
+    final = invoke_graph(new_state("g1", "What is Section 357 of BNS about?"))
     return final, asked, calls
 
 
@@ -330,7 +332,7 @@ def test_graph_caps_at_one_retry_then_hands_a_withdrawn_draft_to_a_person(monkey
     assert final["escalation_reason"] == "verification_failed" and final["verification"]["status"] == "failed"
     assert trail(final) == [
         ("orchestrator", "routed"), ("cache_lookup", "disabled"), ("legal_head", "answered"), ("verifier", "retry"),
-        ("legal_head", "answered"), ("verifier", "fail"), ("human_review", "needs_human"),
+        ("legal_head", "answered"), ("verifier", "fail"), ("queue_review", "awaiting_review"),
     ]
 
 
@@ -342,7 +344,7 @@ def test_graph_a_failed_department_is_never_retried(monkeypatch):
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: ("legal_compliance", 0.9))
     monkeypatch.setattr(legal_compliance, "ask_legal_question", down)
     no_checker(monkeypatch)
-    final = build_graph().invoke(new_state("g2", "law question"))
+    final = invoke_graph(new_state("g2", "law question"))
     assert len(calls) == 1 and DepartmentResult.from_state(final["department_result"]).status == "failed"
 
 
@@ -378,7 +380,7 @@ def test_graph_export_retry_re_asks_the_chat_service_with_the_feedback(monkeypat
     monkeypatch.setattr(export_compliance, "ask_export_question", chat)
     monkeypatch.setattr(export_compliance, "get_trade_data", trade)
     sequence(monkeypatch, bad("contradicted", claim="HS code 62034200 applies to cotton t-shirts", quote="TROUSERS"), good("T-SHIRTS, COTTON"))
-    final = build_graph().invoke(new_state("g3", "cotton t-shirts"))
+    final = invoke_graph(new_state("g3", "cotton t-shirts"))
     r = DepartmentResult.from_state(final["department_result"])
     assert r.status == "answered" and "61091000" in r.answer
     assert len(questions) == 2 and "HS code 62034200 applies to cotton t-shirts" in questions[1]
@@ -389,6 +391,6 @@ def test_graph_backend_answers_are_labelled_unchecked_end_to_end(monkeypatch):
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: ("backend_ticketing", 0.9))
     monkeypatch.setattr(backend_ticketing, "ask_ticketing_agent", returns({"status": "answered", "category": "hw", "answer": "Hold the power button."}))
     no_checker(monkeypatch)
-    final = build_graph().invoke(new_state("g4", "laptop will not boot"))
+    final = invoke_graph(new_state("g4", "laptop will not boot"))
     assert DepartmentResult.from_state(final["department_result"]).status == "answered"
     assert final["verification"] == {"status": "unchecked", "check": "no_source_material"}

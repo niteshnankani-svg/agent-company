@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { AgentResponse } from "@/lib/types";
-import { ApiError, generateRequestId, sendAgentRequest } from "@/lib/api";
+import { ApiError, fetchRun, generateRequestId, sendAgentRequest } from "@/lib/api";
 import TraceGraph from "./TraceGraph";
 import ResultPanel from "./ResultPanel";
 import FollowUpForm from "./FollowUpForm";
@@ -26,6 +26,25 @@ export default function AskConsole() {
   // The sentence the current answer is about. A follow-up always replays this one, even if the
   // box has been edited since.
   const [submitted, setSubmitted] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [stillPending, setStillPending] = useState(false);
+
+  // Ask the API whether a person has decided yet on a request that was passed to review.
+  async function checkDecision() {
+    if (!response) return;
+    setChecking(true);
+    setError(null);
+    try {
+      const latest = await fetchRun(response.run_id);
+      setResponse(latest);
+      setStillPending(latest.pending_review);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong. Please try again.");
+      setMode("error");
+    } finally {
+      setChecking(false);
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -33,6 +52,7 @@ export default function AskConsole() {
     setMode("loading");
     setError(null);
     setResponse(null);
+    setStillPending(false);
     setSubmitted(rawInput);
     try {
       setResponse(await sendAgentRequest({ request_id: generateRequestId("ask"), raw_input: rawInput }));
@@ -132,7 +152,9 @@ export default function AskConsole() {
         </div>
       )}
 
-      {response && <ResultPanel response={response} />}
+      {response && (
+        <ResultPanel response={response} onCheck={checkDecision} checking={checking} checkedStillPending={stillPending} />
+      )}
       {response?.result.status === "needs_more_info" && response.result.follow_up && (
         <FollowUpForm
           key={response.request_id}

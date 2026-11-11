@@ -31,3 +31,6 @@ frontend/tsconfig.tsbuildinfo
 
 # vercel
 .vercel
+
+# Durable run state and the review inbox (SQLite file); sensitive data, never commit
+data/
