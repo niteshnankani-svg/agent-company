@@ -3,11 +3,14 @@
 langgraph
 pydantic>=2
 anthropic[bedrock]
+boto3
 typesafe-sdk==0.7.2
 xgboost
 scikit-learn
 pandas
 numpy
+# Optional, only if EMBEDDING_PROVIDER=local (large; pulls in torch):
+#   sentence-transformers
 joblib
 faker
 httpx

@@ -16,14 +16,12 @@ import asyncio
 import re
 
 from contract import DepartmentResult, Evidence, service_error
+from pii import scrub_pii
 from ticketing_mcp import ask_ticketing_agent
 
 DEPARTMENT = "backend_ticketing"
 MAX_TICKET_CHARS = 8000
 
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
-_PHONE = re.compile(r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b")
-_CARD = re.compile(r"\b(?:\d[ -]*?){13,16}\b")
 _INJECTION = re.compile(
     r"ignore\s+(all\s+)?(previous|prior|system)|system\s*prompt|reveal\s+.*secret|bypass\s+.*(auth|guard)",
     re.I,
@@ -33,10 +31,6 @@ _SECURITY = re.compile(
     r"|compromised\s+credentials|unauthorized\s+access|suspicious\s+|brute\s+force",
     re.I,
 )
-
-
-def scrub_pii(text: str) -> str:
-    return _CARD.sub("<CARD>", _PHONE.sub("<PHONE>", _EMAIL.sub("<EMAIL>", text)))
 
 
 def run_backend(raw_input: str) -> DepartmentResult:

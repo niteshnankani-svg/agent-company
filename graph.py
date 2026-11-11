@@ -1,6 +1,7 @@
 """The LangGraph wiring. Every node returns a partial state update; none mutate state."""
 from langgraph.graph import END, StateGraph
 
+from cache import get_cache, why_not_cacheable
 from contract import DepartmentResult
 from departments import run_department
 from orchestrator import orchestrator_node
@@ -74,50 +75,118 @@ def route_after_sequence_step(state: GraphState) -> str:
 def route_after_orchestrator(state: GraphState) -> str:
     if state.get("department_sequence"):
         return "sequence_step"
-    return HEAD_NODES.get(state["request_type"], "unsupported_department")
+    if state["request_type"] in HEAD_NODES:
+        return "cache_lookup"
+    # "human_escalation" (the router could not decide or was unreachable) and any
+    # unexpected value both go to a person, explicitly, by name.
+    return "human_review"
+
+
+def cache_key(department: str, state: GraphState) -> tuple[str, str]:
+    """(text, scope) the cache is keyed on: the text the department actually answers."""
+    fields = state.get("department_fields") or {}
+    if department == "legal_compliance":
+        return fields.get("question") or state["raw_input"], str(fields.get("act_filter") or "")
+    return state["raw_input"], ""
+
+
+def cache_lookup_node(state: GraphState) -> dict:
+    """Before running a department: reuse a stored, verified answer if policy allows."""
+    department = state["request_type"]
+    text, scope = cache_key(department, state)
+    skip = why_not_cacheable(department, text)
+    if skip:
+        return {"audit_trail": [audit_entry(state, "cache_lookup", "skipped", reason=skip)]}
+    cache, note = get_cache()
+    if cache is None:
+        return {"audit_trail": [audit_entry(state, "cache_lookup", "disabled", reason=note)]}
+    hit = cache.lookup(department, text, scope)
+    if hit is None:
+        return {"audit_trail": [audit_entry(state, "cache_lookup", "miss")]}
+    result = DepartmentResult.from_state(hit.result)
+    update = result_update(state, "cache_lookup", result)
+    update["audit_trail"] = [
+        audit_entry(
+            state, "cache_lookup", "hit", department=department,
+            similarity=round(hit.similarity, 4), age_seconds=round(hit.age_seconds),
+        )
+    ]
+    update["cache_hit"] = True
+    return update
+
+
+def route_after_cache(state: GraphState) -> str:
+    return "done" if state.get("cache_hit") else HEAD_NODES[state["request_type"]]
+
+
+def cache_store_node(state: GraphState) -> dict:
+    """After the verifier passed a result: remember it if policy allows. Never before verification."""
+    department = state.get("active_department") or ""
+    if state.get("department_history"):
+        return {"audit_trail": [audit_entry(state, "cache_store", "skipped", reason="sequential run")]}
+    raw = state.get("department_result")
+    if not raw:
+        return {"audit_trail": [audit_entry(state, "cache_store", "skipped", reason="no result")]}
+    result = DepartmentResult.from_state(raw)
+    text, scope = cache_key(department, state)
+    reason = why_not_cacheable(department, text, result)
+    if reason is None:
+        cache, note = get_cache()
+        if cache is None:
+            reason = note
+        else:
+            reason = cache.store(department, text, result, scope)
+    status = "stored" if reason is None else "not_cached"
+    return {"audit_trail": [audit_entry(state, "cache_store", status, reason=reason)]}
 
 
 # A failed verification retries the department that produced the result.
 # (Replaced in Phase 4: retry only with specific feedback, at most once.)
 def route_after_verifier(state: GraphState) -> str:
     if state["verifier_result"] == "pass":
-        return "done"
+        return "cache_store"
     if state["retry_count"] >= MAX_RETRIES:
-        return "human_escalation"
+        return "human_review"
     # Unknown/unset active_department fails closed to human review.
-    return HEAD_NODES.get(state.get("active_department"), "human_escalation")
+    return HEAD_NODES.get(state.get("active_department"), "human_review")
 
 
-def unsupported_department_node(state: GraphState) -> dict:
-    """The orchestrator could not pick a department. Replaced by a real human node in Phase 2."""
-    result = DepartmentResult(
-        department="orchestrator",
-        status="needs_human",
-        reason="request_not_classified",
+def human_review_node(state: GraphState) -> dict:
+    """Where every request a machine cannot finish ends up.
+
+    Reached when the router could not pick a department, or the verifier kept
+    failing. It always yields a ``needs_human`` result with a reason. Today it
+    records the hand-off and ends the run; Phase 5 makes it pause the run with
+    ``interrupt()`` until a person decides.
+    """
+    reason = state.get("escalation_reason") or (
+        "verifier_failed" if state.get("verifier_result") == "fail" else "unspecified"
     )
-    return result_update(state, "unsupported_department", result)
-
-
-def human_escalation_node(state: GraphState) -> dict:
-    """Reached only when the verifier keeps failing. Replaced by a pausing node in Phase 5."""
-    return {
-        "escalation_reason": (
-            f"Verifier failed {MAX_RETRIES} times; routed to human review. "
-            "Whatever result is shown was NOT verified."
-        ),
-        "audit_trail": [audit_entry(state, "human_escalation", "needs_human")],
+    update: dict = {
+        "escalation_reason": reason,
+        "audit_trail": [audit_entry(state, "human_review", "needs_human", reason=reason)],
     }
+    if not state.get("department_result"):
+        result = DepartmentResult(
+            department=state.get("active_department") or "orchestrator",
+            status="needs_human",
+            reason=reason,
+        )
+        update["department_result"] = result.to_state()
+        update["active_department"] = result.department
+    return update
 
 
 def build_graph():
     graph = StateGraph(GraphState)
     graph.add_node("orchestrator", orchestrator_entry_node)
     graph.add_node("sequence_step", sequence_step)
+    graph.add_node("cache_lookup", cache_lookup_node)
     for department, node_name in HEAD_NODES.items():
         graph.add_node(node_name, make_head_node(department))
     graph.add_node("verifier", verifier_node)
-    graph.add_node("unsupported_department", unsupported_department_node)
-    graph.add_node("human_escalation", human_escalation_node)
+    graph.add_node("cache_store", cache_store_node)
+    graph.add_node("human_review", human_review_node)
 
     graph.set_entry_point("orchestrator")
     graph.add_conditional_edges(
@@ -125,9 +194,14 @@ def build_graph():
         route_after_orchestrator,
         {
             "sequence_step": "sequence_step",
-            **{node: node for node in HEAD_NODES.values()},
-            "unsupported_department": "unsupported_department",
+            "cache_lookup": "cache_lookup",
+            "human_review": "human_review",
         },
+    )
+    graph.add_conditional_edges(
+        "cache_lookup",
+        route_after_cache,
+        {"done": END, **{node: node for node in HEAD_NODES.values()}},
     )
     graph.add_conditional_edges(
         "sequence_step",
@@ -140,13 +214,13 @@ def build_graph():
         "verifier",
         route_after_verifier,
         {
-            "done": END,
+            "cache_store": "cache_store",
             **{node: node for node in HEAD_NODES.values()},
-            "human_escalation": "human_escalation",
+            "human_review": "human_review",
         },
     )
-    graph.add_edge("unsupported_department", END)
-    graph.add_edge("human_escalation", END)
+    graph.add_edge("cache_store", END)
+    graph.add_edge("human_review", END)
     return graph.compile()
 
 

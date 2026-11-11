@@ -158,3 +158,63 @@ One entry per design choice: what was chosen, what was rejected, why, and what b
 **Chosen:** drop the regex that turned `[BNS, Section 357]` into a "decision". The answer text and the retrieved sections are returned as they are.
 
 **Rejected:** keeping it. With no `decision` field it has no job, and comparing the answer's claims to the retrieved sections is exactly what the Phase 4 verifier is for.
+
+---
+
+# Phase 2 — routing
+
+## D-018 — Classifier clients are created on first use, with SDK-native timeout and retry
+
+**Chosen:** `clients.py` builds the TypeSafe and Bedrock clients lazily (`lru_cache`), so importing the app needs no key and no network. Timeouts and retries use the SDKs' own settings: TypeSafe 10 s per attempt, 2 retries with backoff within a 25 s total budget (connection errors, timeouts, 408/429/5xx); Bedrock 10 s, 1 retry. All overridable by env (`TYPESAFE_TIMEOUT_SECONDS`, `TYPESAFE_MAX_RETRIES`, `TYPESAFE_RETRY_BUDGET_SECONDS`, `BEDROCK_*`, `ROUTER_MODEL_ID`). Region and model ID were hard-coded and are now env-configurable with the old values as defaults. HR's complaint gate uses the same client.
+
+**Rejected:** writing our own retry loop (the SDKs already do it, with backoff and `Retry-After`); creating clients in module scope and catching the failure (that is the defect: tests and startup needed a key).
+
+**Verified by test:** a server that always answers 503 produces exactly 3 attempts (1 + 2 retries) and then an exception; importing `api` in a fresh interpreter with no key succeeds; with no key, a request ends in human review with `classifier_unavailable`.
+
+**Worst case to a routing decision when both services hang:** about 25 s (TypeSafe) + 2 × 10 s (Bedrock) ≈ 45 s.
+
+**At 100x load:** retries multiply traffic against a service that is already failing (up to 3x). Needs a circuit breaker and a shared rate limit; neither exists yet.
+
+## D-019 — What the router does when it cannot decide
+
+**Chosen:** Jev's answer is used only if the department name is one of the five and its confidence ≥ `ROUTER_MIN_CONFIDENCE` (default 0.75, unchanged). Otherwise the LLM is asked; if it answers a valid name, that is used. If neither yields a department the request goes to a human with one of two reasons: `request_not_classified` (they answered and were unsure) or `classifier_unavailable` (any of them errored, or no key/budget).
+
+**Rejected:** (a) trusting any string Jev returns (a made-up department would crash routing downstream); (b) one generic "escalate" reason, because "the system is down" and "the request is ambiguous" need different responses from an operator.
+
+**Also changed:** routing is no longer cached (see D-021).
+
+**At 100x load:** every request costs one Jev call, plus one Bedrock call when Jev is unsure. LLM budget stays 5 per request.
+
+## D-020 — One explicit human-review node
+
+**Chosen:** the router's `"human_escalation"` and the verifier's retry cap now both go to a single node `human_review`, by name. It always yields a `needs_human` result with a reason, keeps any result the department already produced, and sets `escalation_reason`. It replaces `unsupported_department` and the old `human_escalation` node.
+
+**Rejected:** keeping two nodes, and keeping the implicit fall-through that caused defect #5.
+
+**Honest limit:** today it records the hand-off and ends the run. It does not pause or resume; that is Phase 5, when this node gets `interrupt()` and a checkpointer.
+
+**At 100x load:** n/a until Phase 5.
+
+## D-021 — Semantic answer cache: layered conditions, not just similarity
+
+**Chosen:** `cache.py` is replaced. A stored answer is reused only if all hold: department is declared cacheable; no personal identifiers or first-person wording in the request; same department and scope (Legal: the act filter); identical **discriminators** (every number/identifier, all-caps acronym and mid-sentence capitalised word); not expired (TTL, default 24 h); and embedding similarity ≥ threshold (default 0.95). Lookup happens before the department runs (a hit skips it); storing happens after the verifier passed the result (`cache_store` node), never before. Only `answered` results are stored. Sequential runs are never cached. LRU eviction at 1000 entries.
+
+**Why layered:** embeddings fix paraphrases but not the original bug. I tested it: with the discriminator guard off, "Section 357" vs "Section 358" is a hit at cosine > 0.8 (a test fails if the guard stops working).
+
+**What may never be cached, and why:** Finance (a person's or invoice's data), HR (live employee data), Backend (a specific ticket and person), Export (must be checked against live TradeStat every time). **Only Legal is cacheable**, because its answers come from a fixed statute corpus. Unknown departments are not cacheable (deny by default).
+
+**Rejected:** (a) embedding similarity alone (collides on numbers and acronyms); (b) caching routing decisions (saves a call only if the embedding is cheaper than the classification, and a wrong entry sends a request to the wrong department); (c) letting the department write its own result into the cache before verification (the old design rule: only verified output is cached); (d) NER to detect person names (a heavy dependency for a guess); the department-level rule is the real guarantee and the text rules are belt and braces. **A question that names a person without a pronoun, PII pattern or capitalised mismatch could still be cached**; for Legal the answer comes from statute text, but this is a known gap.
+
+**Honest limits:** the 0.95 threshold is a placeholder. Calibrating it needs the real embedding model and a labelled set of near-miss questions; that belongs in the live eval (Phase 7). The cache is per-process memory: per worker, lost on restart.
+
+**At 100x load:** per-worker memory means hit rate drops as workers are added; the scan is over entries with matching discriminators (small), but each Legal request now makes one embedding call even on a miss. Move to a shared store (Redis or pgvector) with the same policy layer.
+
+## D-022 — Embedding provider is a deployment setting; the cache is off until one is set
+
+**Chosen:** `EMBEDDING_PROVIDER` = `bedrock` (Titan text embeddings, default model `amazon.titan-embed-text-v2:0`) or `local` (sentence-transformers, optional large dependency). Unset means no cache, which is always safe. An unknown value logs an error and disables the cache. An embedder failure is a cache miss, never a request error. Nothing that policy forbids is ever sent to the embedding service.
+
+**Why this way:** the owner has not yet chosen a provider and I cannot test either against a real service here. Both adapters are small; the Bedrock one is tested with a stub client against the documented Titan request/response format, **not against AWS**. The local one is untested because it needs a model download.
+
+**Rejected:** guessing a provider and making the cache depend on it.
+
+**At 100x load:** Bedrock embeddings add a network call per cacheable request and a per-token cost; local embeddings add CPU and memory per worker.

@@ -1,7 +1,13 @@
-import os
+import pytest
 
-# STOPGAP until Phase 2: orchestrator.py and hr_complaints.py build a TypeSafeClient
-# when imported, and that needs *some* API key string to construct. This is a dummy;
-# no test makes a real call (every external service is mocked). Phase 2 makes the
-# clients lazy and this line goes away.
-os.environ.setdefault("TYPESAFE_API_KEY", "dummy-value-for-tests-no-real-calls")
+import cache as cache_module
+
+
+@pytest.fixture(autouse=True)
+def isolate_process_wide_state(monkeypatch):
+    """No test may depend on, or leak, real keys, a real embedder, or a populated cache."""
+    for name in ("TYPESAFE_API_KEY", "EMBEDDING_PROVIDER", "ROUTER_MIN_CONFIDENCE"):
+        monkeypatch.delenv(name, raising=False)
+    cache_module.set_cache(None, "disabled for tests")  # individual tests install their own
+    yield
+    cache_module.set_cache(None, "disabled for tests")

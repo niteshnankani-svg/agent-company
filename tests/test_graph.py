@@ -8,22 +8,15 @@ import legal_compliance
 import orchestrator
 from contract import DepartmentResult
 from graph import (
-    HEAD_NODES, MAX_RETRIES, build_graph, human_escalation_node, make_head_node,
+    HEAD_NODES, MAX_RETRIES, build_graph, human_review_node, make_head_node,
     orchestrator_entry_node, route_after_orchestrator, route_after_sequence_step,
-    route_after_verifier, sequence_step, unsupported_department_node,
+    route_after_verifier, sequence_step,
 )
 from state import audit_entry, new_state
 from verifier import verifier_node
 
 AR = dict(age=34, income=65000.0, loan_amount=25000.0, credit_score=610, years_employed=4, missed_payments=2)
 CIT = {"act": "BNS", "section_number": "357", "title": "T", "summary": "S", "score": 0.64}
-
-
-@pytest.fixture(autouse=True)
-def fresh_routing_cache():
-    orchestrator.orchestrator_cache._store.clear()
-    yield
-    orchestrator.orchestrator_cache._store.clear()
 
 
 def returns(value):
@@ -54,21 +47,21 @@ def test_head_node_returns_only_what_it_changes():
     ]
 
 
-def test_orchestrator_cache_path_is_pure(monkeypatch):
+def test_orchestrator_routes_confident_jev_answer_and_is_pure(monkeypatch):
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: ("legal_compliance", 0.9))
+    monkeypatch.setattr(orchestrator, "llm_classify", lambda *a: pytest.fail("LLM must not be asked"))
     state = new_state("r2", "What is Section 357 of BNS about?")
-    update = assert_pure(orchestrator.orchestrator_node, state)  # fills the routing cache
+    update = assert_pure(orchestrator.orchestrator_node, state)
     assert update["request_type"] == "legal_compliance"
-    monkeypatch.setattr(orchestrator, "local_classify", lambda t: pytest.fail("cache should answer"))
-    again = assert_pure(orchestrator.orchestrator_node, state)
-    assert again["audit_trail"][0]["source"] == "cache"
+    assert update["audit_trail"][0]["source"] == "local_model"
 
 
 def test_orchestrator_llm_fallback_returns_the_new_budget_instead_of_mutating(monkeypatch):
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: (None, 0.1))
-    monkeypatch.setattr(orchestrator, "llm_classify", lambda text, budget: ("finance", 0.85, budget - 1))
+    monkeypatch.setattr(orchestrator, "llm_classify", lambda text, budget: ("finance", "ok", budget - 1))
     state = new_state("r3", "something odd", llm_budget=5)
     update = assert_pure(orchestrator.orchestrator_node, state)
+    assert update["request_type"] == "finance"
     assert update["llm_budget_remaining"] == 4 and state["llm_budget_remaining"] == 5
 
 
@@ -102,10 +95,23 @@ def test_sequence_step_does_not_pop_the_callers_list():
     assert update["department_history"][0]["department"] == "finance"
 
 
-def test_unsupported_and_human_nodes_are_pure():
-    update = assert_pure(unsupported_department_node, new_state("r7", "x"))
-    assert DepartmentResult.from_state(update["department_result"]).status == "needs_human"
-    assert "escalation_reason" in assert_pure(human_escalation_node, new_state("r8", "x"))
+def test_human_review_node_is_pure_and_always_yields_needs_human_with_a_reason():
+    state = new_state("r7", "x")
+    state["escalation_reason"] = "request_not_classified"
+    update = assert_pure(human_review_node, state)
+    result = DepartmentResult.from_state(update["department_result"])
+    assert result.status == "needs_human" and result.reason == "request_not_classified"
+    assert update["audit_trail"][0]["node"] == "human_review"
+
+
+def test_human_review_after_verifier_cap_keeps_the_unverified_result_and_says_why():
+    state = new_state("r7b", "x")
+    kept = DepartmentResult(department="legal_compliance", status="answered", answer="A",
+                            evidence=[__import__("contract").Evidence(source="s", text="t")]).to_state()
+    state.update(department_result=kept, verifier_result="fail", active_department="legal_compliance")
+    update = assert_pure(human_review_node, state)
+    assert "department_result" not in update  # the department's own result is left in place
+    assert update["escalation_reason"] == "verifier_failed"
 
 
 def test_an_unexpected_exception_in_a_department_becomes_failed_not_a_crash(monkeypatch):
@@ -120,11 +126,11 @@ def test_an_unexpected_exception_in_a_department_becomes_failed_not_a_crash(monk
 
 
 # ------------------------------------------------------------------------ routing
-def test_routing_covers_every_department_and_falls_back_for_unknown():
-    for dept, node in HEAD_NODES.items():
-        assert route_after_orchestrator({"request_type": dept}) == node
+def test_routing_sends_every_department_through_the_cache_and_everything_else_to_a_human():
+    for dept in HEAD_NODES:
+        assert route_after_orchestrator({"request_type": dept}) == "cache_lookup"
     for other in ("human_escalation", None, "astrology"):
-        assert route_after_orchestrator({"request_type": other}) == "unsupported_department"
+        assert route_after_orchestrator({"request_type": other}) == "human_review"
     assert route_after_orchestrator({"request_type": "finance", "department_sequence": ["x"]}) == "sequence_step"
 
 
@@ -135,12 +141,12 @@ def test_sequence_routing():
 
 def test_verifier_routing_pass_retry_cap_and_unknown():
     for n in (0, 1, MAX_RETRIES + 2):
-        assert route_after_verifier({"verifier_result": "pass", "retry_count": n}) == "done"
+        assert route_after_verifier({"verifier_result": "pass", "retry_count": n}) == "cache_store"
     for dept, node in HEAD_NODES.items():
         for n in range(MAX_RETRIES):
             assert route_after_verifier({"verifier_result": "fail", "retry_count": n, "active_department": dept}) == node
-        assert route_after_verifier({"verifier_result": "fail", "retry_count": MAX_RETRIES, "active_department": dept}) == "human_escalation"
-    assert route_after_verifier({"verifier_result": "fail", "retry_count": 0, "active_department": None}) == "human_escalation"
+        assert route_after_verifier({"verifier_result": "fail", "retry_count": MAX_RETRIES, "active_department": dept}) == "human_review"
+    assert route_after_verifier({"verifier_result": "fail", "retry_count": 0, "active_department": None}) == "human_review"
 
 
 def test_entry_node_skips_classification_for_an_explicit_sequence(monkeypatch):
@@ -160,7 +166,8 @@ def test_end_to_end_legal_answered(monkeypatch):
     final = run(new_state("e1", "What is Section 357 of BNS about?"))
     result = DepartmentResult.from_state(final["department_result"])
     assert result.status == "answered" and result.confidence.kind == "retrieval_score"
-    assert [e["node"] for e in final["audit_trail"]] == ["orchestrator", "legal_head", "verifier"]
+    assert [e["node"] for e in final["audit_trail"]] == [
+        "orchestrator", "cache_lookup", "legal_head", "verifier", "cache_store"]
     assert final["verifier_result"] == "pass" and final["retry_count"] == 0
 
 
@@ -183,13 +190,23 @@ def test_end_to_end_service_down_is_a_failed_result_and_is_not_retried(monkeypat
     assert len(calls) == 1, "a failed department must not be blindly re-run"
 
 
-def test_end_to_end_unclassifiable_request_needs_a_human(monkeypatch):
+def test_end_to_end_unsure_classifiers_go_to_the_human_node(monkeypatch):
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: (None, 0.0))
-    monkeypatch.setattr(orchestrator, "llm_classify", lambda text, budget: ("human_escalation", 0.0, budget))
+    monkeypatch.setattr(orchestrator, "llm_classify", lambda text, budget: (None, "unsure", budget - 1))
     final = run(new_state("e4", "asdkjfh aslkdjf help"))
     result = DepartmentResult.from_state(final["department_result"])
     assert result.status == "needs_human" and result.reason == "request_not_classified"
-    assert [e["node"] for e in final["audit_trail"]] == ["orchestrator", "unsupported_department"]
+    assert [e["node"] for e in final["audit_trail"]] == ["orchestrator", "human_review"]
+    assert final["escalation_reason"] == "request_not_classified"
+
+
+def test_end_to_end_classifier_outage_is_reported_as_such_not_a_crash(monkeypatch):
+    def down(text): raise ConnectionError("TypeSafe unreachable")
+    monkeypatch.setattr(orchestrator, "local_classify", down)
+    monkeypatch.setattr(orchestrator, "llm_classify", lambda text, budget: (None, "error", budget - 1))
+    final = run(new_state("e4b", "anything"))
+    result = DepartmentResult.from_state(final["department_result"])
+    assert result.status == "needs_human" and result.reason == "classifier_unavailable"
 
 
 def test_end_to_end_sequence_includes_legal_and_keeps_history(monkeypatch):
@@ -225,6 +242,6 @@ def test_api_reports_needs_human_for_unclassified_requests(monkeypatch):
     import api
 
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: (None, 0.0))
-    monkeypatch.setattr(orchestrator, "llm_classify", lambda text, budget: ("human_escalation", 0.0, budget))
+    monkeypatch.setattr(orchestrator, "llm_classify", lambda text, budget: (None, "unsure", budget))
     body = TestClient(api.app).post("/request", json={"request_id": "a2", "raw_input": "???"}).json()
     assert body["needs_human"] is True  # previously reported false for this case

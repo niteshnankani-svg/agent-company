@@ -1,11 +1,31 @@
-from typesafe_sdk import Choice, TypeSafeClient
+"""The orchestrator: picks one department for a free-text request, or sends it to a human.
 
-from cache import DepartmentCache
+Order of attempts:
+1. Jev (TypeSafe), a Choice question over the five departments. Used only if its
+   own confidence is at least ``ROUTER_MIN_CONFIDENCE`` (default 0.75).
+2. Claude Haiku on Bedrock, asked for exactly one department name. It may answer
+   ``human_escalation`` if it cannot tell.
+3. Otherwise the request goes to the human-review node, with a reason that says
+   whether the classifiers were *unsure* (``request_not_classified``) or
+   *unreachable* (``classifier_unavailable``).
+
+Both classifiers run through lazily created clients with timeouts and retries
+(``clients.py``). Nothing here raises for a classifier outage.
+
+Routing is not cached: a cache only helps if looking up is cheaper than asking, and
+a wrong cached route sends a request to the wrong department.
+"""
+import logging
+import os
+from dataclasses import dataclass
+from typing import Optional
+
+from typesafe_sdk import Choice
+
+from clients import ROUTER_MODEL_ID, get_bedrock_client, get_typesafe_client
 from state import GraphState, audit_entry
 
-orchestrator_cache = DepartmentCache(
-    department="orchestrator", similarity_threshold=0.90
-)
+log = logging.getLogger(__name__)
 
 DEPARTMENTS = [
     "finance",
@@ -14,8 +34,15 @@ DEPARTMENTS = [
     "export_compliance",
     "legal_compliance",
 ]
+HUMAN = "human_escalation"
 
-typesafe_client = TypeSafeClient()  # made lazy in Phase 2
+
+def min_confidence() -> float:
+    try:
+        return float(os.environ["ROUTER_MIN_CONFIDENCE"])
+    except (KeyError, ValueError):
+        return 0.75
+
 
 # Descriptions derived from the department definitions this router used
 # before Jev (see git history for the original keyword lists).
@@ -53,10 +80,9 @@ _DEPARTMENT_CRITERIA = {
 }
 
 
-def local_classify(text: str) -> tuple[str | None, float]:
-    # TypeSafe's Jev model classifies via a Choice question over the same
-    # five departments.
-    response = typesafe_client.system_one(
+
+def local_classify(text: str) -> tuple[Optional[str], float]:
+    response = get_typesafe_client().system_one(
         state=text,
         questions={
             "department": Choice(
@@ -76,65 +102,73 @@ spans multiple departments, pick the one owning the primary decision. If you
 cannot confidently classify it, respond exactly: human_escalation."""
 
 
-def llm_classify(text: str, budget: int) -> tuple[str, float, int]:
-    """Returns (department, confidence, budget_remaining). Does not touch state."""
+def llm_classify(text: str, budget: int) -> tuple[Optional[str], str, int]:
+    """Returns (department or None, outcome, budget_remaining). Never touches state.
+
+    outcome is one of: "ok", "unsure" (the model declined or gave a non-department),
+    "no_budget", "error".
+    """
     if budget <= 0:
-        return "human_escalation", 0.0, budget
-
+        return None, "no_budget", budget
+    budget -= 1  # spent before the attempt: a failed call still counts
     try:
-        from anthropic import AnthropicBedrock
-
-        client = AnthropicBedrock(aws_region="us-east-1")
-        # Spent before the attempt: a failed call still counts.
-        budget -= 1
-        response = client.messages.create(
-            model="us.anthropic.claude-haiku-4-5-20251001-v1:0",
-            max_tokens=100,
+        response = get_bedrock_client().messages.create(
+            model=ROUTER_MODEL_ID,
+            max_tokens=20,
             system=ORCHESTRATOR_PROMPT,
             messages=[{"role": "user", "content": text}],
         )
         department = response.content[0].text.strip().lower()
-        if department in DEPARTMENTS:
-            return department, 0.85, budget
-        return "human_escalation", 0.85, budget
     except Exception as exc:
-        print(f"Anthropic call skipped/failed: {exc}")
-        return "human_escalation", 0.0, budget
+        log.warning("LLM router unavailable: %s", type(exc).__name__)
+        return None, "error", budget
+    if department in DEPARTMENTS:
+        return department, "ok", budget
+    return None, "unsure", budget
+
+
+@dataclass(frozen=True)
+class Routing:
+    department: Optional[str]
+    source: str
+    reason: Optional[str]
+    budget: int
+
+
+def route(text: str, budget: int) -> Routing:
+    errored = False
+    try:
+        department, confidence = local_classify(text)
+        if department in DEPARTMENTS and confidence >= min_confidence():
+            return Routing(department, "local_model", None, budget)
+    except Exception as exc:  # TypeSafe down, key missing, malformed reply...
+        log.warning("Jev router unavailable: %s", type(exc).__name__)
+        errored = True
+
+    department, outcome, budget = llm_classify(text, budget)
+    if department:
+        return Routing(department, "llm", None, budget)
+    errored = errored or outcome == "error"
+    reason = "classifier_unavailable" if errored else "request_not_classified"
+    return Routing(None, "none", reason, budget)
 
 
 def orchestrator_node(state: GraphState) -> dict:
-    cached = orchestrator_cache.get(state["raw_input"])
-    if cached:
-        return {
-            "request_type": cached["department"],
-            "audit_trail": [
-                audit_entry(state, "orchestrator", "routed", department=cached["department"], source="cache")
-            ],
-        }
-
-    department, confidence = local_classify(state["raw_input"])
-    if department is not None and confidence >= 0.75:
-        orchestrator_cache.set(state["raw_input"], {"department": department})
-        return {
-            "request_type": department,
-            "audit_trail": [
-                audit_entry(state, "orchestrator", "routed", department=department, source="local_model")
-            ],
-        }
-
-    department, confidence, budget = llm_classify(
-        state["raw_input"], state["llm_budget_remaining"]
-    )
-    return {
-        "request_type": department,
-        "llm_budget_remaining": budget,
+    routing = route(state["raw_input"], state["llm_budget_remaining"])
+    update: dict = {
+        "llm_budget_remaining": routing.budget,
+        "request_type": routing.department or HUMAN,
         "audit_trail": [
             audit_entry(
                 state,
                 "orchestrator",
-                "routed",
-                department=department,
-                source="llm" if confidence > 0 else "unclassified",
+                "routed" if routing.department else "unrouted",
+                department=routing.department,
+                source=routing.source,
+                reason=routing.reason,
             )
         ],
     }
+    if routing.reason:
+        update["escalation_reason"] = routing.reason
+    return update

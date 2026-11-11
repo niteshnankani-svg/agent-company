@@ -27,6 +27,7 @@ class GraphState(TypedDict):
     # A DepartmentResult as a plain dict (see contract.DepartmentResult.to_state).
     department_result: Optional[dict]
     verifier_result: Optional[str]
+    cache_hit: bool
     retry_count: int
     escalation_reason: Optional[str]
     audit_trail: Annotated[list[dict], operator.add]
@@ -55,6 +56,7 @@ def new_state(
         "sub_department": sub_department,
         "department_result": None,
         "verifier_result": None,
+        "cache_hit": False,
         "retry_count": 0,
         "escalation_reason": None,
         "audit_trail": [],

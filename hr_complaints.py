@@ -17,19 +17,18 @@ evidence and never presented as confidence.
 import asyncio
 from typing import Any, Optional
 
-from typesafe_sdk import Noul, TypeSafeClient
+from typesafe_sdk import Noul
 
+from clients import get_typesafe_client
 from contract import DepartmentResult, Evidence, service_error
 from hr_agent_mcp import ask_hr_agent
 
 DEPARTMENT = "hr_complaints"
 COMPLAINT_THRESHOLD = 0.5
 
-typesafe_client = TypeSafeClient()  # made lazy in Phase 2
-
 
 def complaint_probability(text: str) -> float:
-    response = typesafe_client.system_one(
+    response = get_typesafe_client().system_one(
         state=text,
         questions={
             "is_complaint": Noul(
