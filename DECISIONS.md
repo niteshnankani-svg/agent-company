@@ -218,3 +218,27 @@ One entry per design choice: what was chosen, what was rejected, why, and what b
 **Rejected:** guessing a provider and making the cache depend on it.
 
 **At 100x load:** Bedrock embeddings add a network call per cacheable request and a per-token cost; local embeddings add CPU and memory per worker.
+
+## D-023 — The frontend is a thin proxy to the Python API, with no fallback
+
+**Chosen:** `frontend/app/api/agent/request/route.ts` validates the input (non-empty, ≤ 8000 chars), forwards `{request_id, raw_input}` to `AGENT_COMPANY_API_URL`, and returns the API's answer. If the API is unset, down, slow or errors, the user gets a short error. The upstream error body is never forwarded. Deleted: the TypeScript router (`lib/orchestrator.ts`), the in-process TF-IDF "backend" model (`helpdeskModel.ts`, `helpdesk-model.json`), the canned replies for the other four departments, the `@typesafe-ai/sdk` dependency, and all the regexes and criteria copied from Python. A test fails if any of that reappears.
+
+**Rejected:** (a) keeping the in-process fallback "for resilience": it showed answers from a different system without saying so (defect #11). (b) The browser calling the Python API directly: the API will need a key (Phase 6) that must not be in browser code, and the API sends no CORS headers.
+
+**At 100x load:** each request holds a serverless function open for up to 55 s while the graph runs. At volume this should become submit-then-poll, which the Phase 5 resume endpoints make possible.
+
+## D-024 — The UI is one free-text box
+
+**Chosen:** one textarea and an Ask button. Removed: the "advanced" view, the department scenario tabs and forms, the department-labelled example buttons (examples are now plain sentences), the sequential pipeline view, and the DistilBERT panel. The result panel renders by status: `answered` (answer, expandable evidence, and a confidence figure **only** when the department has a real one, labelled with what it is, e.g. "retrieval score… not the chance the answer is right"); `needs_human` (plain-language reason; any draft is labelled "not verified"); `needs_more_info` (the missing field names); `failed` (the error). The animated trace now reads the new audit `status` field.
+
+**Known gaps, on purpose:** `needs_more_info` lists the fields but there is no follow-up form yet (Phase 3). The Python API still accepts a caller-supplied `department_sequence` (used by tests and API clients); the UI never sends it. If "nobody picks a department" must hold for API clients too, that parameter should be removed; say so and I will.
+
+**Also fixed:** the first trace node was clipped at the left edge.
+
+## D-025 — Frontend tests run against a mock of the Python API
+
+**Chosen:** the Playwright run starts `tests/mock-api.mjs` and points the console at it, so the 12 tests need no backend and no keys. They cover each status, no department picker, only `{request_id, raw_input}` forwarded, upstream errors not leaking, input validation, and no router code in the frontend source. `PW_CHROMIUM_PATH` optionally selects an installed Chromium (needed in this sandbox, harmless elsewhere).
+
+**Rejected:** tests against a live backend (they could not run in CI or without keys).
+
+**Not covered:** the mock proves the console's behaviour, not the real API's output. I separately ran the real Python app with no keys behind the real console and confirmed it returns `needs_human / classifier_unavailable` and the UI shows it.
