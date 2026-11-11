@@ -20,7 +20,31 @@ const reply = (id, result, nodes) => ({
   escalation_reason: null, department_history: [], audit_trail: trail(id, nodes),
 });
 
+const FORM_FIELDS = [
+  { name: "vendor_is_first_time", label: "Is this the first time we are paying this vendor?", kind: "boolean", help: null, choices: null, problem: null },
+  { name: "vendor_average_invoice", label: "What this vendor usually invoices (₹)", kind: "number", help: "Leave blank for a first-time vendor.", choices: null, problem: null },
+  { name: "payment_terms_days", label: "Payment terms (days)", kind: "integer", help: null, choices: null, problem: null },
+];
+const formResult = (fields, reason, problems = {}) => base("finance", "needs_more_info", {
+  missing_fields: fields.map((f) => f.name), reason,
+  follow_up: { sub_department: "ap", collected: { invoice_amount: 45000 }, fields: fields.map((f) => ({ ...f, problem: problems[f.name] ?? null })) },
+});
+
+function respondFollowUp(body) {
+  const f = body.follow_up.fields;
+  if (f.payment_terms_days === 99999)
+    return reply(body.request_id, formResult(FORM_FIELDS, "invalid_fields", { payment_terms_days: "Input should be less than or equal to 3650" }));
+  return reply(body.request_id, base("finance", "needs_human", {
+    reason: "payment_requires_human_approval",
+    answer: "AP policy recommendation: approve (no_defined_policy_flags). Human approval required; no payment executed.",
+  }));
+}
+
 function respond(text, id) {
+  if (text.includes("form-unavailable"))
+    return reply(id, formResult(FORM_FIELDS, "extraction_unavailable"));
+  if (text.includes("form"))
+    return reply(id, formResult(FORM_FIELDS, "missing_fields"));
   if (text.includes("answered-legal"))
     return reply(id, base("legal_compliance", "answered", {
       answer: "Section 357 of the BNS covers **breach of contract** to attend on a helpless person.",
@@ -34,7 +58,7 @@ function respond(text, id) {
     }));
   if (text.includes("human"))
     return reply(id, base("backend_ticketing", "needs_human", { reason: "security_incident_review" }));
-  if (text.includes("more-info"))
+  if (text.includes("more-list"))
     return reply(id, base("finance", "needs_more_info", { missing_fields: ["credit_score", "loan_amount"], reason: "missing_fields" }));
   if (text.includes("failed"))
     return reply(id, base("legal_compliance", "failed", { error: "legal_rag: request_failed (All connection attempts failed)" }));
@@ -54,7 +78,7 @@ http.createServer((req, res) => {
         return res.end(JSON.stringify({ detail: "Request processing failed: SECRET_UPSTREAM_TRACEBACK at /srv/app/graph.py" }));
       }
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(respond(last.raw_input, last.request_id)));
+      res.end(JSON.stringify(last.follow_up ? respondFollowUp(last) : respond(last.raw_input, last.request_id)));
     });
     return;
   }

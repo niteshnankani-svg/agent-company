@@ -13,6 +13,8 @@ What it shows for each request:
 - the result, by status: `answered` (answer and the evidence relied on), `needs_human`
   (why a person must decide), `needs_more_info` (which details are missing), `failed`
   (which service failed);
+- for `needs_more_info`, a form rendered from the field list the API returns (nothing about finance or any other
+  department is known to the frontend); answering it re-sends the original sentence with the answers;
 - a confidence figure **only** when the department has a real one, labelled with what it is;
 - an animated replay of the real `audit_trail` the graph produced (nothing is invented).
 

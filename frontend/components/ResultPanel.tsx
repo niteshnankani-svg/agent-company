@@ -94,13 +94,15 @@ export default function ResultPanel({ response }: { response: AgentResponse }) {
         {result.status === "needs_more_info" && (
           <div data-testid="result-needs-more-info">
             <div className="text-[14px]" style={{ color: "var(--text-primary)" }}>
-              More information is needed to continue:
+              {result.follow_up ? "More information is needed to continue. Please fill in the form below." : "More information is needed to continue:"}
             </div>
-            <ul className="mt-2 list-disc pl-5 font-mono text-[12.5px]" style={{ color: "var(--text-secondary)" }}>
-              {result.missing_fields.map((f) => (
-                <li key={f}>{f.replaceAll("_", " ")}</li>
-              ))}
-            </ul>
+            {!result.follow_up && (
+              <ul className="mt-2 list-disc pl-5 font-mono text-[12.5px]" style={{ color: "var(--text-secondary)" }}>
+                {result.missing_fields.map((f) => (
+                  <li key={f}>{f.replaceAll("_", " ")}</li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
 

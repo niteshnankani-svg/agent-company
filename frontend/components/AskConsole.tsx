@@ -5,6 +5,7 @@ import type { AgentResponse } from "@/lib/types";
 import { ApiError, generateRequestId, sendAgentRequest } from "@/lib/api";
 import TraceGraph from "./TraceGraph";
 import ResultPanel from "./ResultPanel";
+import FollowUpForm from "./FollowUpForm";
 
 type Mode = "idle" | "loading" | "result" | "error";
 
@@ -22,6 +23,9 @@ export default function AskConsole() {
   const [mode, setMode] = useState<Mode>("idle");
   const [response, setResponse] = useState<AgentResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The sentence the current answer is about. A follow-up always replays this one, even if the
+  // box has been edited since.
+  const [submitted, setSubmitted] = useState("");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -29,8 +33,36 @@ export default function AskConsole() {
     setMode("loading");
     setError(null);
     setResponse(null);
+    setSubmitted(rawInput);
     try {
       setResponse(await sendAgentRequest({ request_id: generateRequestId("ask"), raw_input: rawInput }));
+      setMode("result");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong. Please try again.");
+      setMode("error");
+    }
+  }
+
+  // The user answered a form the system generated. Send back what it already understood, merged
+  // with the answers, along with the department that form came from (so nothing is routed twice).
+  async function submitFollowUp(answers: Record<string, unknown>) {
+    const followUp = response?.result.follow_up;
+    if (!response || !followUp) return;
+    const department = response.result.department;
+    setMode("loading");
+    setError(null);
+    try {
+      setResponse(
+        await sendAgentRequest({
+          request_id: generateRequestId("ask"),
+          raw_input: submitted,
+          follow_up: {
+            department,
+            sub_department: followUp.sub_department,
+            fields: { ...followUp.collected, ...answers },
+          },
+        }),
+      );
       setMode("result");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong. Please try again.");
@@ -101,6 +133,15 @@ export default function AskConsole() {
       )}
 
       {response && <ResultPanel response={response} />}
+      {response?.result.status === "needs_more_info" && response.result.follow_up && (
+        <FollowUpForm
+          key={response.request_id}
+          followUp={response.result.follow_up}
+          reason={response.result.reason}
+          loading={mode === "loading"}
+          onSubmit={submitFollowUp}
+        />
+      )}
       <TraceGraph trail={response?.audit_trail ?? []} />
     </div>
   );

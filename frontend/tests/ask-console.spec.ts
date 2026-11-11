@@ -44,8 +44,8 @@ test("needs_human: says a person must decide and why, in plain words", async ({ 
   await expect(page.getByTestId("result-needs-human")).toContainText("Security Team");
 });
 
-test("needs_more_info: lists the missing fields", async ({ page }) => {
-  await ask(page, "more-info credit check");
+test("needs_more_info without a form spec: lists the missing fields", async ({ page }) => {
+  await ask(page, "more-list credit check");
   await expect(page.getByTestId("result-status")).toHaveAttribute("data-status", "needs_more_info");
   await expect(page.getByTestId("result-needs-more-info")).toContainText("credit score");
   await expect(page.getByTestId("result-needs-more-info")).toContainText("loan amount");
@@ -55,6 +55,53 @@ test("failed: says which service failed", async ({ page }) => {
   await ask(page, "failed lookup");
   await expect(page.getByTestId("result-status")).toHaveAttribute("data-status", "failed");
   await expect(page.getByTestId("result-failed")).toContainText("legal_rag: request_failed");
+});
+
+test("needs_more_info with a form: renders exactly the questions the backend asked for", async ({ page }) => {
+  await ask(page, "form pay invoice INV-4021 for 45000");
+  await expect(page.getByTestId("result-status")).toHaveAttribute("data-status", "needs_more_info");
+  const form = page.getByTestId("follow-up-form");
+  await expect(form).toBeVisible();
+  await expect(form.getByText("Is this the first time we are paying this vendor?")).toBeVisible();
+  await expect(form.getByText("Leave blank for a first-time vendor.")).toBeVisible();
+  await expect(form.getByRole("radio")).toHaveCount(2); // yes / no for the one boolean
+  await expect(form.getByRole("spinbutton")).toHaveCount(2); // the two numeric fields
+  // nothing the backend did not ask for
+  await expect(form.getByText(/credit score|gst|overdue/i)).toHaveCount(0);
+});
+
+test("submitting the form sends the original sentence, what was understood, and the answers", async ({ page, request }) => {
+  await ask(page, "form pay invoice INV-4021 for 45000");
+  await page.getByTestId("ask-input").fill("something else typed afterwards"); // must not leak into the follow-up
+  const form = page.getByTestId("follow-up-form");
+  await form.getByLabel("No").check();
+  await form.getByLabel("Payment terms (days)").fill("30");
+  await form.getByTestId("follow-up-submit").click();
+
+  await expect(page.getByTestId("result-needs-human")).toContainText("approved automatically");
+  await expect(page.getByTestId("follow-up-form")).toHaveCount(0);
+  const last = await (await request.get(`${MOCK}/__last`)).json();
+  expect(last.raw_input).toBe("form pay invoice INV-4021 for 45000");
+  expect(last.follow_up).toEqual({
+    department: "finance",
+    sub_department: "ap",
+    // numbers are numbers, the boolean is a boolean, blank fields are left out, collected values come back
+    fields: { invoice_amount: 45000, vendor_is_first_time: false, payment_terms_days: 30 },
+  });
+});
+
+test("a rejected answer reappears on the form with the reason, next to the field", async ({ page }) => {
+  await ask(page, "form pay invoice");
+  const form = page.getByTestId("follow-up-form");
+  await form.getByLabel("Payment terms (days)").fill("99999");
+  await form.getByTestId("follow-up-submit").click();
+  const field = page.getByTestId("field-payment_terms_days");
+  await expect(field.getByRole("alert")).toContainText("less than or equal to 3650");
+});
+
+test("when the message could not be read automatically the form says so", async ({ page }) => {
+  await ask(page, "form-unavailable pay invoice");
+  await expect(page.getByTestId("follow-up-form")).toContainText("could not be read automatically");
 });
 
 test("the real audit trail is replayed", async ({ page }) => {
@@ -85,6 +132,11 @@ test("the route rejects empty, oversized and malformed input before calling the 
   expect(empty.status()).toBe(400);
   const huge = await request.post("/api/agent/request", { data: { request_id: "x", raw_input: "a".repeat(8001) } });
   expect(huge.status()).toBe(400);
+  const bad = (follow_up: unknown) => request.post("/api/agent/request", { data: { request_id: "x", raw_input: "hi", follow_up } });
+  expect((await bad({ fields: {} })).status()).toBe(400); // no department
+  expect((await bad({ department: "finance", fields: [] })).status()).toBe(400); // fields must be an object
+  expect((await bad({ department: "finance", fields: { a: { nested: 1 } } })).status()).toBe(400); // values must be simple
+  expect((await bad({ department: "finance", fields: { a: "x".repeat(201) } })).status()).toBe(400);
   const notJson = await request.post("/api/agent/request", { headers: { "Content-Type": "application/json" }, data: "{nope" });
   expect(notJson.status()).toBe(400);
 });

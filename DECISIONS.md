@@ -242,3 +242,59 @@ One entry per design choice: what was chosen, what was rejected, why, and what b
 **Rejected:** tests against a live backend (they could not run in CI or without keys).
 
 **Not covered:** the mock proves the console's behaviour, not the real API's output. I separately ran the real Python app with no keys behind the real console and confirmed it returns `needs_human / classifier_unavailable` and the UI shows it.
+
+---
+
+# Phase 3 — missing information
+
+## D-026 — Extraction: the model proposes, code decides what to believe
+
+**Chosen:** `extraction.py` asks Claude Haiku on Bedrock (same client and model as routing, overridable with `EXTRACTION_MODEL_ID`) to record details the sentence *explicitly* states, through a forced tool call, at temperature 0, with the user's text fenced as data. Each proposed value must come with a verbatim quote. Code then accepts a value only if the quote appears word-for-word in the sentence, and (for numbers) the number is one of the numbers in that quote (it understands `65,000`, `₹65000`, `1,50,000`, `65k`, `1.5 lakh`, `2 crore`). Anything else is discarded as "not stated" and asked for on the form. If the model is unreachable the result is a form for everything, never an error.
+
+**Rejected:** (a) trusting the model's JSON (a plausible wrong number would flow into a payment recommendation); (b) regex per field (brittle); (c) a different model (you did not object to Haiku when I proposed it; it is one env var to change).
+
+**Known limit:** number words ("forty-five thousand") are not understood, so they fall back to the form. That is the safe direction.
+
+**At 100x load:** one extra Haiku call for every finance request that is not already complete. It is not counted against the per-request LLM budget (departments are pure and cannot see state). Add that accounting and a circuit breaker if it matters.
+
+## D-027 — Booleans are never extracted from prose
+
+**Chosen:** "first-time vendor?" and "duplicate invoice number?" are always answered on the form (yes/no), never read from the sentence.
+
+**Rejected:** extracting them. "Not a first-time vendor" read as "first-time vendor" flips the policy result, and a quote cannot prove polarity. A yes/no question costs the user two clicks.
+
+**Consequence:** every AP request needs one form round. AR can complete from the sentence alone if all six numbers are stated.
+
+## D-028 — Ask only for what the policy uses; derive the rest
+
+**Chosen:** AP asks for invoice amount, first-time vendor, the vendor's usual invoice, duplicate invoice number, payment terms, and days since invoice. Code derives the ratio (amount ÷ usual invoice), "round number" and "overdue". `gst_rate_pct` and `interstate` are accepted if supplied but never asked, because the AP policy does not use them. A first-time vendor has no history, so the "usual invoice" is not required and the ratio rule is skipped (the model now allows a missing ratio only for first-time vendors). AR still asks for its six fields (the credit review validates them and hands to a human).
+
+**Rejected:** asking for all ten stored fields (users cannot answer "ratio to vendor average") and inventing a ratio for first-time vendors (the synthetic data did, which is an artefact, not a fact).
+
+**Compatibility:** the older complete 10-field record still works; if its derived flags disagree with the other fields the error names that field.
+
+## D-029 — The backend describes the form; the frontend renders it
+
+**Chosen:** a `needs_more_info` result may carry `follow_up`: the department's path, `collected` (what was understood), and an ordered list of field specs (name, label, kind, help, choices, and a `problem` when an earlier answer was unusable). A validator requires the specs to match `missing_fields` exactly. `FollowUpForm.tsx` knows nothing about finance.
+
+**Rejected:** a field table in the frontend (that is the duplication defect #11 again), and a plain list of names (not enough to render number vs yes/no vs choice).
+
+## D-030 — Follow-ups carry the department the system chose, and are not routed or extracted twice
+
+**Chosen:** the console answers a form with `follow_up: {department, sub_department, fields}` plus the original sentence. The API validates the department against the five and skips routing (audit shows `source: follow_up`). The model is not asked again, except when the user has only just picked the path on that form (the sentence's numbers were not used yet because they belong to a path nobody had chosen).
+
+**Rejected:** re-running the whole graph on the follow-up (a second router call that could pick a different department and discard the answers, and a second extraction call); and any frontend-chosen department (the form came from the system, the user still never picks).
+
+**Trust note:** an API client can pin a department with `follow_up`. Phase 6 adds API-key auth; the same holds for `department_sequence`.
+
+## D-031 — Provenance travels with the recommendation
+
+**Chosen:** the finance evidence records, per value, whether it was "entered by the user", "stated in the request: “…”" (the quote), or "derived".
+
+**Why:** a human approving a payment should know which numbers a model read from a sentence. Note: values that go through a form round come back as "entered by the user", because the form returns them; only a value extracted in the same request keeps its quote. That is a simplification, not a leak.
+
+## D-032 — Why only Finance has an extraction step
+
+**Chosen:** extraction is a generic mechanism (field definitions, grounding, coercion), but only Finance needs structured input. HR, Backend and Legal send free text to their services; Export sends a product description, and its service takes the whole sentence.
+
+**Rejected:** extracting a product name for Export. It would add a model call and a new failure mode to a department that already works on free text. It is a clear next step if the HS-code question template ("What is the HS code for <whole sentence>?") proves awkward in real use.

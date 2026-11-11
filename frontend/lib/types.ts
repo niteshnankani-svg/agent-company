@@ -10,6 +10,22 @@ export interface Evidence {
   data: Record<string, unknown> | null;
 }
 
+// One question on a follow-up form. The backend defines it; the UI only renders it.
+export interface FieldSpec {
+  name: string;
+  label: string;
+  kind: "number" | "integer" | "boolean" | "choice" | "text";
+  help: string | null;
+  choices: Record<string, string> | null;
+  problem: string | null; // set when the user already answered and it was not acceptable
+}
+
+export interface FollowUp {
+  sub_department: string | null;
+  collected: Record<string, unknown>; // what the system already understood; sent back with the answers
+  fields: FieldSpec[];
+}
+
 export interface DepartmentResult {
   department: string;
   status: Status;
@@ -19,6 +35,7 @@ export interface DepartmentResult {
   missing_fields: string[];
   error: string | null;
   reason: string | null;
+  follow_up: FollowUp | null;
 }
 
 export interface AuditTrailEntry {
@@ -44,7 +61,14 @@ export interface AgentResponse {
 }
 
 // The user types one sentence. They never choose a department.
+// `follow_up` is present only when they are answering a form the system generated;
+// it carries the department that form came from, so the request is not routed again.
 export interface AgentRequestBody {
   request_id: string;
   raw_input: string;
+  follow_up?: {
+    department: string;
+    sub_department: string | null;
+    fields: Record<string, unknown>;
+  };
 }
