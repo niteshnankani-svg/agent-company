@@ -1,5 +1,5 @@
 """Validated finance triage. Recommendations never execute a payment or credit decision."""
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 class Invoice(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
@@ -13,16 +13,25 @@ class Invoice(BaseModel):
     payment_terms_days: int = Field(ge=0, le=3650)
     days_outstanding: int = Field(ge=0, le=36500)
     overdue: bool
-    @model_validator(mode='after')
-    def consistent(self):
-        if self.overdue != (self.days_outstanding > self.payment_terms_days):
-            raise ValueError('overdue disagrees with dates')
-        if self.is_round_number != (self.invoice_amount % 10000 == 0):
-            raise ValueError('round-number flag disagrees with amount')
-        return self
+    # Cross-field checks are attached to the field that is wrong, so a
+    # validation error names it ('overdue', 'is_round_number') and a follow-up
+    # form can ask for just that field.
+    @field_validator('is_round_number')
+    @classmethod
+    def round_flag_matches_amount(cls, v, info: ValidationInfo):
+        amount = info.data.get('invoice_amount')
+        if amount is not None and v != (amount % 10000 == 0):
+            raise ValueError('round-number flag disagrees with invoice_amount')
+        return v
 
-AP_FEATURES = list(Invoice.model_fields)
-AR_FEATURES = ['age', 'income', 'loan_amount', 'credit_score', 'years_employed', 'missed_payments']
+    @field_validator('overdue')
+    @classmethod
+    def overdue_matches_dates(cls, v, info: ValidationInfo):
+        days, terms = info.data.get('days_outstanding'), info.data.get('payment_terms_days')
+        if days is not None and terms is not None and v != (days > terms):
+            raise ValueError('overdue disagrees with days_outstanding and payment_terms_days')
+        return v
+
 
 def invoice_policy(fields):
     """Versioned replica of supplied synthetic-data policy, not jurisdictional law."""
@@ -45,13 +54,21 @@ class CreditRecord(BaseModel):
     credit_score: int = Field(ge=300, le=850)
     years_employed: int = Field(ge=0, le=85)
     missed_payments: int = Field(ge=0, le=1000)
-    @model_validator(mode='after')
-    def consistent(self):
-        if self.years_employed > self.age-14: raise ValueError('Employment history is inconsistent with age')
-        return self
+    @field_validator('years_employed')
+    @classmethod
+    def employment_fits_age(cls, v, info: ValidationInfo):
+        age = info.data.get('age')
+        if age is not None and v > age - 14:
+            raise ValueError('years_employed is inconsistent with age')
+        return v
 
 def credit_review(fields):
     CreditRecord.model_validate(fields)
     return {'recommendation': 'human_review', 'reason': 'credit_model_not_validated', 'default_probability': None,
             'requires_human_approval': True, 'automated_action': False,
             'basis': 'Labeled default outcomes and training provenance are required before credit-model promotion.'}
+
+# The fields each finance path needs. Phase 3 revisits which of these the user
+# must supply versus which code can derive (is_round_number, overdue).
+AP_FIELDS = list(Invoice.model_fields)
+AR_FIELDS = list(CreditRecord.model_fields)

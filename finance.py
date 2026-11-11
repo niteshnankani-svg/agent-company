@@ -1,41 +1,101 @@
-"""Finance compatibility adapter with fail-closed model governance.
-Legacy pickles are evaluated offline by Company Desk; they do not make live
-credit/payment decisions. No semantic-cache replay or LLM confidence override.
+"""Finance department: deterministic, fail-closed triage. No external service.
+
+Policy (unchanged from before the rebuild): finance never executes a payment or a
+credit decision. Every valid finance request ends in ``needs_human`` with the
+policy's recommendation attached for the reviewer. The legacy credit model stays
+quarantined; nothing here loads it.
+
+Inputs: ``sub_department`` ("ar" = customer credit, "ap" = supplier invoice) and
+``fields``. Missing or invalid fields produce ``needs_more_info`` naming exactly
+which fields to ask for; they never crash and never guess.
 """
-try:
-    from finance_policy import invoice_policy, credit_review
-    from state import log_audit
-except ImportError:
-    from .finance_policy import invoice_policy, credit_review
-    from .state import log_audit
+from typing import Optional
 
-class DisabledFinanceCache:
-    def get(self, key): return None
-    def set(self, key, value): return None
-finance_cache=DisabledFinanceCache()
+from pydantic import ValidationError
 
-def customer_side_finance(customer_fields):
-    try: analysis=credit_review(customer_fields)
-    except ValueError:
-        analysis={'reason':'invalid_credit_record'}
-    return {'decision':'human_escalation','confidence':0.0,'rationale':'Credit model quarantined: labeled default evaluation and provenance required.','evidence_ids':[],'source':'human_escalation','analysis':analysis}
+from contract import DepartmentResult, Evidence
+from finance_policy import (
+    AP_FIELDS,
+    AR_FIELDS,
+    credit_review,
+    invoice_policy,
+)
 
-def supplier_side_finance(invoice_fields):
+DEPARTMENT = "finance"
+SUB_DEPARTMENTS = ("ar", "ap")
+
+
+def _more_info(missing: list[str], reason: str) -> DepartmentResult:
+    return DepartmentResult(
+        department=DEPARTMENT,
+        status="needs_more_info",
+        missing_fields=missing,
+        reason=reason,
+    )
+
+
+def _check_fields(fields: dict, required: list[str], validate) -> tuple[Optional[dict], Optional[DepartmentResult]]:
+    """Return (analysis, None) when the record is valid, else (None, needs_more_info)."""
+    absent = [name for name in required if name not in fields or fields[name] in (None, "")]
+    if absent:
+        return None, _more_info(absent, "missing_fields")
     try:
-        analysis=invoice_policy(invoice_fields)
-        rationale=f"AP policy recommendation: {analysis['recommendation']}; {', '.join(analysis['reasons'])}. Human approval required; no payment executed."
-    except ValueError:
-        analysis={'reason':'invalid_invoice_record'}
-        rationale='Invoice fields failed validation; human review required.'
-    return {'decision':'human_escalation','confidence':0.0,'rationale':rationale,'evidence_ids':['ap-triage-v2'],'source':'human_escalation','analysis':analysis}
+        return validate(fields), None
+    except ValidationError as exc:
+        bad: list[str] = []
+        for err in exc.errors():
+            name = str(err["loc"][0]) if err["loc"] else None
+            if name and name not in bad:
+                bad.append(name)
+        # A record-level error with no field attached cannot be turned into a
+        # question for the user; refuse rather than guess which field to ask for.
+        return None, _more_info(bad or list(required), "invalid_fields")
 
-def llm_escalate_finance(prior_output,state):
-    return {**prior_output,'decision':'human_escalation','confidence':0.0,'source':'human_escalation','rationale':'A qualified human must review this finance recommendation; an LLM cannot override model validation.'}
 
-def finance_head_node(state,department_fields,sub_department):
-    if sub_department=='ar':output=customer_side_finance(department_fields)
-    elif sub_department=='ap':output=supplier_side_finance(department_fields)
-    else:output={'decision':'human_escalation','confidence':0.0,'source':'human_escalation','rationale':'Unknown finance capability','evidence_ids':[]}
-    state['department_output']=output;state['active_department']='finance'
-    log_audit(state,'finance_head',output['decision'],source=output['source'])
-    return state
+def run_finance(raw_input: str, fields: Optional[dict], sub_department: Optional[str]) -> DepartmentResult:
+    fields = fields or {}
+
+    if sub_department not in SUB_DEPARTMENTS:
+        return _more_info(["sub_department"], "finance_path_not_specified")
+
+    if sub_department == "ar":
+        analysis, problem = _check_fields(fields, AR_FIELDS, credit_review)
+        if problem:
+            return problem
+        return DepartmentResult(
+            department=DEPARTMENT,
+            status="needs_human",
+            reason="credit_model_not_validated",
+            answer=(
+                "Credit review cannot be automated: the credit model has no labeled "
+                "default evaluation or provenance yet. A qualified human must decide."
+            ),
+            evidence=[
+                Evidence(
+                    source="credit_review_policy",
+                    text=analysis["basis"],
+                    data={"input": fields, "analysis": analysis},
+                )
+            ],
+        )
+
+    analysis, problem = _check_fields(fields, AP_FIELDS, invoice_policy)
+    if problem:
+        return problem
+    return DepartmentResult(
+        department=DEPARTMENT,
+        status="needs_human",
+        reason="payment_requires_human_approval",
+        answer=(
+            f"AP policy recommendation: {analysis['recommendation']} "
+            f"({', '.join(analysis['reasons'])}). Human approval required; "
+            "no payment executed."
+        ),
+        evidence=[
+            Evidence(
+                source=f"ap_policy:{analysis['policy_version']}",
+                text=analysis["basis"],
+                data={"input": fields, "analysis": analysis},
+            )
+        ],
+    )

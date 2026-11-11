@@ -1,6 +1,7 @@
 # Core: orchestrator, Finance, Export, Backend departments
 
 langgraph
+pydantic>=2
 anthropic[bedrock]
 typesafe-sdk==0.7.2
 xgboost

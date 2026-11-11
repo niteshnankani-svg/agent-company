@@ -1,12 +1,7 @@
 from typesafe_sdk import Choice, TypeSafeClient
 
-try:
-    from cache import DepartmentCache
-    from state import GraphState, log_audit
-except ImportError:
-    from .cache import DepartmentCache
-    from .state import GraphState, log_audit
-
+from cache import DepartmentCache
+from state import GraphState, audit_entry
 
 orchestrator_cache = DepartmentCache(
     department="orchestrator", similarity_threshold=0.90
@@ -20,7 +15,7 @@ DEPARTMENTS = [
     "legal_compliance",
 ]
 
-typesafe_client = TypeSafeClient()
+typesafe_client = TypeSafeClient()  # made lazy in Phase 2
 
 # Descriptions derived from the department definitions this router used
 # before Jev (see git history for the original keyword lists).
@@ -60,8 +55,7 @@ _DEPARTMENT_CRITERIA = {
 
 def local_classify(text: str) -> tuple[str | None, float]:
     # TypeSafe's Jev model classifies via a Choice question over the same
-    # five departments — same function signature as before; nothing
-    # downstream needs to change.
+    # five departments.
     response = typesafe_client.system_one(
         state=text,
         questions={
@@ -82,16 +76,17 @@ spans multiple departments, pick the one owning the primary decision. If you
 cannot confidently classify it, respond exactly: human_escalation."""
 
 
-def llm_classify(text: str, state: GraphState) -> tuple[str, float]:
-    if state["llm_budget_remaining"] <= 0:
-        return "human_escalation", 0.0
+def llm_classify(text: str, budget: int) -> tuple[str, float, int]:
+    """Returns (department, confidence, budget_remaining). Does not touch state."""
+    if budget <= 0:
+        return "human_escalation", 0.0, budget
 
     try:
         from anthropic import AnthropicBedrock
 
         client = AnthropicBedrock(aws_region="us-east-1")
-        # Decremented before the attempt — a failed call still counts.
-        state["llm_budget_remaining"] -= 1
+        # Spent before the attempt: a failed call still counts.
+        budget -= 1
         response = client.messages.create(
             model="us.anthropic.claude-haiku-4-5-20251001-v1:0",
             max_tokens=100,
@@ -100,33 +95,46 @@ def llm_classify(text: str, state: GraphState) -> tuple[str, float]:
         )
         department = response.content[0].text.strip().lower()
         if department in DEPARTMENTS:
-            return department, 0.85
-        return "human_escalation", 0.85
+            return department, 0.85, budget
+        return "human_escalation", 0.85, budget
     except Exception as exc:
         print(f"Anthropic call skipped/failed: {exc}")
-        return "human_escalation", 0.0
+        return "human_escalation", 0.0, budget
 
 
-def orchestrator_node(state: GraphState) -> GraphState:
+def orchestrator_node(state: GraphState) -> dict:
     cached = orchestrator_cache.get(state["raw_input"])
     if cached:
-        state["request_type"] = cached["department"]
-        log_audit(state, "orchestrator", cached["department"], source="cache")
-        return state
+        return {
+            "request_type": cached["department"],
+            "audit_trail": [
+                audit_entry(state, "orchestrator", "routed", department=cached["department"], source="cache")
+            ],
+        }
 
     department, confidence = local_classify(state["raw_input"])
     if department is not None and confidence >= 0.75:
-        state["request_type"] = department
-        log_audit(state, "orchestrator", department, source="local_model")
         orchestrator_cache.set(state["raw_input"], {"department": department})
-        return state
+        return {
+            "request_type": department,
+            "audit_trail": [
+                audit_entry(state, "orchestrator", "routed", department=department, source="local_model")
+            ],
+        }
 
-    department, confidence = llm_classify(state["raw_input"], state)
-    state["request_type"] = department
-    log_audit(
-        state,
-        "orchestrator",
-        department,
-        source="llm" if confidence > 0 else "human_escalation",
+    department, confidence, budget = llm_classify(
+        state["raw_input"], state["llm_budget_remaining"]
     )
-    return state
+    return {
+        "request_type": department,
+        "llm_budget_remaining": budget,
+        "audit_trail": [
+            audit_entry(
+                state,
+                "orchestrator",
+                "routed",
+                department=department,
+                source="llm" if confidence > 0 else "unclassified",
+            )
+        ],
+    }

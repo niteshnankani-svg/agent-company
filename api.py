@@ -4,7 +4,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
+from contract import DepartmentResult
 from graph import build_graph, build_initial_state
+from state import new_state
 
 app = FastAPI(title="Agent Company API", version="1.0.0")
 
@@ -29,12 +31,11 @@ class DepartmentRequest(BaseModel):
 async def handle_request(req: DepartmentRequest):
     try:
         if req.department_sequence:
-            from state import new_state
-
-            state = new_state(req.request_id, req.raw_input)
-            state["department_sequence"] = req.department_sequence
-            state["department_fields_by_dept"] = (
-                req.department_fields_by_dept or {}
+            state = new_state(
+                req.request_id,
+                req.raw_input,
+                department_sequence=req.department_sequence,
+                department_fields_by_dept=req.department_fields_by_dept or {},
             )
         else:
             state = build_initial_state(
@@ -47,19 +48,23 @@ async def handle_request(req: DepartmentRequest):
         # Department nodes use synchronous wrappers around some async tools
         # (for example asyncio.run() in Export). Keep the HTTP handler async,
         # but invoke the synchronous graph off the event-loop thread.
-        result = await asyncio.to_thread(graph_app.invoke, state)
+        final = await asyncio.to_thread(graph_app.invoke, state)
 
+        raw_result = final.get("department_result")
+        result = (
+            DepartmentResult.from_state(raw_result)
+            if raw_result
+            else DepartmentResult(
+                department="orchestrator", status="failed", error="no result was produced"
+            )
+        )
         return {
-            "decision": result["department_output"]["decision"],
-            "confidence": result["department_output"]["confidence"],
-            "rationale": result["department_output"]["rationale"],
-            "evidence_ids": result["department_output"]["evidence_ids"],
-            "source": result["department_output"]["source"],
-            "audit_trail": result["audit_trail"],
-            "department_history": result.get("department_history"),
-            "backend_triage": result.get("backend_triage"),
-            "escalation_reason": result.get("escalation_reason"),
-            "needs_human": result["department_output"]["decision"] == "human_escalation" or bool(result.get("escalation_reason")),
+            "request_id": final["request_id"],
+            "result": result.to_state(),
+            "needs_human": result.status == "needs_human",
+            "escalation_reason": final.get("escalation_reason"),
+            "department_history": final.get("department_history") or [],
+            "audit_trail": final["audit_trail"],
         }
     except Exception as e:
         raise HTTPException(

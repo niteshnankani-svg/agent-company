@@ -1,5 +1,7 @@
 # How Agent Company works today (Phase 0 audit)
 
+> **Status:** this describes `main` **before** the rebuild. Later phases change it; `DECISIONS.md` records each change. It is rewritten at the end (Phase 7).
+
 This document describes the system **as it is on `main` before any change**, written from reading every
 file and from a few read-only experiments. Nothing in the code was modified to produce it.
 File and line references (`file.py:NN`) point at the pre-rebuild code.

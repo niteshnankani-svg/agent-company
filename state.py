@@ -1,32 +1,35 @@
-from typing import Literal, NotRequired, Optional, TypedDict
+"""Graph state and the helpers nodes use to build *partial* updates.
 
+Nodes never mutate the state they receive. They return a dict containing only
+the keys they change; LangGraph merges it. List fields that several nodes add
+to (``audit_trail``, ``department_history``) use an append reducer, so a node
+returns just the new entries.
+"""
+import operator
+from typing import Annotated, Any, Optional, TypedDict
 
-class DepartmentOutput(TypedDict):
-    decision: str
-    confidence: float
-    rationale: str
-    evidence_ids: list[str]
-    source: Literal["cache", "local_model", "llm"]
+from contract import DepartmentResult
 
 
 class GraphState(TypedDict):
-    backend_triage: NotRequired[dict]
     request_id: str
     raw_input: str
     request_type: Optional[str]
     departments_activated: list[str]
     llm_budget_remaining: int
+    # Caller-supplied multi-department run (kept until Phase 2 revisits it).
     department_sequence: Optional[list[str]]
-    department_history: Optional[list[dict]]
     department_fields_by_dept: Optional[dict]
+    department_history: Annotated[list[dict], operator.add]
     active_department: Optional[str]
     department_fields: Optional[dict]
     sub_department: Optional[str]
-    department_output: Optional[DepartmentOutput]
-    verifier_result: Optional[Literal["pass", "fail"]]
+    # A DepartmentResult as a plain dict (see contract.DepartmentResult.to_state).
+    department_result: Optional[dict]
+    verifier_result: Optional[str]
     retry_count: int
     escalation_reason: Optional[str]
-    audit_trail: list[dict]
+    audit_trail: Annotated[list[dict], operator.add]
 
 
 def new_state(
@@ -36,7 +39,6 @@ def new_state(
     department_fields: Optional[dict] = None,
     sub_department: Optional[str] = None,
     department_sequence: Optional[list[str]] = None,
-    department_history: Optional[list[dict]] = None,
     department_fields_by_dept: Optional[dict] = None,
 ) -> GraphState:
     return {
@@ -46,12 +48,12 @@ def new_state(
         "departments_activated": [],
         "llm_budget_remaining": llm_budget,
         "department_sequence": department_sequence,
-        "department_history": department_history,
         "department_fields_by_dept": department_fields_by_dept,
+        "department_history": [],
         "active_department": None,
         "department_fields": department_fields,
         "sub_department": sub_department,
-        "department_output": None,
+        "department_result": None,
         "verifier_result": None,
         "retry_count": 0,
         "escalation_reason": None,
@@ -59,12 +61,25 @@ def new_state(
     }
 
 
-def log_audit(state: GraphState, node: str, decision: str, source: str) -> None:
-    state["audit_trail"].append(
-        {
-            "node": node,
-            "decision": decision,
-            "source": source,
-            "request_id": state["request_id"],
-        }
-    )
+def audit_entry(state: GraphState, node: str, status: str, **extra: Any) -> dict:
+    """One audit-trail record. Returned inside a partial update, never appended in place."""
+    return {"node": node, "status": status, "request_id": state["request_id"], **extra}
+
+
+def result_update(
+    state: GraphState, node: str, result: DepartmentResult
+) -> dict:
+    """The partial update every department node returns for a finished result."""
+    return {
+        "department_result": result.to_state(),
+        "active_department": result.department,
+        "audit_trail": [
+            audit_entry(
+                state,
+                node,
+                result.status,
+                department=result.department,
+                reason=result.reason,
+            )
+        ],
+    }

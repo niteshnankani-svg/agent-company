@@ -1,85 +1,118 @@
-"""Backend department: the deployed ticketing agent (via ticketing_mcp.py)
-classifies and, when confident, resolves the ticket directly.
+"""Backend / IT-ticketing department.
 
-Input validation, PII scrubbing, and injection/security-keyword screening all
-happen locally first, unchanged, regardless of which agent answers - these
-are checks on the raw text itself, not on the classifier. Only text that
-passes them ever reaches the ticketing agent. Whatever it can't confidently
-resolve is escalated to a human, using its own needs_human/escalation_reason
-verdict rather than a locally re-derived confidence gate.
+Local screens run first, on the ticket text itself, before any service sees it:
+input validation, PII scrubbing, a prompt-injection check and a security-keyword
+check. A ticket that trips a screen goes to a human and the ticketing agent is
+never called. Everything else is sent (scrubbed) to the deployed ticketing agent
+at ``TICKETING_URL``, which classifies and, when it is sure, answers.
+
+The agent returns a category, an answer and its own ``needs_human`` verdict. It
+does not return the sources behind its answer, so the only evidence available is
+the agent's classification. Its confidence number has no known meaning (the old
+docs call it a fixed proxy), so confidence is ``none`` and the raw value is kept
+in evidence for the reviewer.
 """
 import asyncio
 import re
 
-if not __package__:
-    from state import DepartmentOutput, GraphState, log_audit
-    from ticketing_mcp import ask_ticketing_agent
-else:
-    from .state import DepartmentOutput, GraphState, log_audit
-    from .ticketing_mcp import ask_ticketing_agent
+from contract import DepartmentResult, Evidence, service_error
+from ticketing_mcp import ask_ticketing_agent
+
+DEPARTMENT = "backend_ticketing"
+MAX_TICKET_CHARS = 8000
+
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_PHONE = re.compile(r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b")
+_CARD = re.compile(r"\b(?:\d[ -]*?){13,16}\b")
+_INJECTION = re.compile(
+    r"ignore\s+(all\s+)?(previous|prior|system)|system\s*prompt|reveal\s+.*secret|bypass\s+.*(auth|guard)",
+    re.I,
+)
+_SECURITY = re.compile(
+    r"\b(malware|ransomware|phishing|breach|botnet|ddos|intrusion|keylogger)\b"
+    r"|compromised\s+credentials|unauthorized\s+access|suspicious\s+|brute\s+force",
+    re.I,
+)
 
 
-def backend_head_node(state: GraphState) -> GraphState:
-    raw = state['raw_input']
-    valid = isinstance(raw, str) and bool(raw.strip()) and len(raw)<=8000 and '\x00' not in raw
-    text = raw.strip() if valid else ''
-    text = re.sub(r'[\w.+-]+@[\w-]+\.[\w.-]+', '<EMAIL>', text)
-    text = re.sub(r'\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b', '<PHONE>', text)
-    text = re.sub(r'\b(?:\d[ -]*?){13,16}\b', '<CARD>', text)
-    injection = re.search(r'ignore\s+(all\s+)?(previous|prior|system)|system\s*prompt|reveal\s+.*secret|bypass\s+.*(auth|guard)', text, re.I)
-    security = re.search(r'\b(malware|ransomware|phishing|breach|botnet|ddos|intrusion|keylogger)\b|compromised\s+credentials|unauthorized\s+access|suspicious\s+|brute\s+force', text, re.I)
+def scrub_pii(text: str) -> str:
+    return _CARD.sub("<CARD>", _PHONE.sub("<PHONE>", _EMAIL.sub("<EMAIL>", text)))
 
-    if not valid or injection:
-        result = None
-        reason = 'invalid_ticket_input' if not valid else 'security_review'
-        decision = 'human_escalation'
-        confidence = 0.0
-        rationale = 'Backend specialist review required.'
-        evidence_ids: list[str] = []
-    elif security:
-        result = None
-        reason = 'security_incident_review'
-        decision = 'human_escalation'
-        confidence = 0.0
-        rationale = 'Security-related keywords detected; Security Team review required.'
-        evidence_ids = []
-    else:
-        result = asyncio.run(ask_ticketing_agent(text))
 
-        if 'error' in result:
-            reason = 'ticketing_agent_unreachable'
-            decision = 'human_escalation'
-            confidence = 0.0
-            rationale = (
-                'The ticketing agent was unreachable or returned an error: '
-                f"{result.get('detail', result['error'])}"
+def run_backend(raw_input: str) -> DepartmentResult:
+    valid = (
+        isinstance(raw_input, str)
+        and bool(raw_input.strip())
+        and len(raw_input) <= MAX_TICKET_CHARS
+        and "\x00" not in raw_input
+    )
+    if not valid:
+        return DepartmentResult(
+            department=DEPARTMENT,
+            status="failed",
+            error=(
+                "invalid_ticket_input: text must be non-empty, at most "
+                f"{MAX_TICKET_CHARS} characters, and contain no NUL bytes"
+            ),
+        )
+
+    text = scrub_pii(raw_input.strip())
+
+    injection = _INJECTION.search(text)
+    if injection:
+        return DepartmentResult(
+            department=DEPARTMENT,
+            status="needs_human",
+            reason="prompt_injection_suspected",
+            evidence=[Evidence(source="local_screen:injection", text=injection.group(0))],
+        )
+
+    security = _SECURITY.search(text)
+    if security:
+        return DepartmentResult(
+            department=DEPARTMENT,
+            status="needs_human",
+            reason="security_incident_review",
+            evidence=[Evidence(source="local_screen:security_keywords", text=security.group(0))],
+        )
+
+    reply = asyncio.run(ask_ticketing_agent(text))
+    if "error" in reply:
+        return DepartmentResult(
+            department=DEPARTMENT,
+            status="failed",
+            error=service_error("ticketing_agent", reply),
+        )
+
+    category = reply.get("category") or reply.get("predicted_category")
+    agent_facts = {
+        k: reply[k]
+        for k in ("status", "category", "predicted_category", "confidence", "escalation_reason", "reason")
+        if k in reply
+    }
+
+    if reply.get("needs_human") or reply.get("status") == "needs_human_review":
+        return DepartmentResult(
+            department=DEPARTMENT,
+            status="needs_human",
+            reason=reply.get("escalation_reason") or reply.get("reason") or "ticketing_agent_escalated",
+            evidence=[Evidence(source="ticketing_agent", data=agent_facts or {"status": "needs_human_review"})],
+        )
+
+    answer = reply.get("answer") or ""
+    if not answer.strip():
+        return DepartmentResult(
+            department=DEPARTMENT, status="failed", error="ticketing_agent: empty answer"
+        )
+    return DepartmentResult(
+        department=DEPARTMENT,
+        status="answered",
+        answer=answer,
+        evidence=[
+            Evidence(
+                source="ticketing_agent",
+                text=f"Classified by the ticketing agent as: {category}" if category else None,
+                data=agent_facts or {"status": "answered"},
             )
-            evidence_ids = []
-        elif result.get('needs_human') or result.get('status') == 'needs_human_review':
-            reason = result.get('escalation_reason') or result.get('reason') or 'ticketing_agent_escalated'
-            decision = 'human_escalation'
-            confidence = result.get('confidence', 0.0)
-            category = result.get('category') or result.get('predicted_category')
-            rationale = (
-                f"Ticketing agent escalated this ticket ({reason})"
-                + (f"; predicted category: {category}" if category else '')
-                + '.'
-            )
-            evidence_ids = []
-        else:
-            reason = None
-            decision = 'answered'
-            confidence = 1.0
-            rationale = result.get('answer', '')
-            evidence_ids = [f"ticketing_agent:{result.get('category')}"]
-
-    output = DepartmentOutput(decision=decision, confidence=confidence,
-                              rationale=rationale, evidence_ids=evidence_ids, source='llm' if decision == 'answered' else 'human_escalation')  # type: ignore[typeddict-item]
-
-    state['backend_triage'] = result
-    state['escalation_reason'] = reason
-    state["department_output"] = output
-    state["active_department"] = "backend_ticketing"
-    log_audit(state, "backend_head", output["decision"], source=output["source"])
-    state['audit_trail'][-1].update({'ticketing_agent_category': (result or {}).get('category'), 'review_reason': reason})
-    return state
+        ],
+    )
