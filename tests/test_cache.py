@@ -11,6 +11,7 @@ from cache import (
 )
 from contract import DepartmentResult, Evidence
 from graph import build_graph
+from helpers import supports_everything
 from state import new_state
 
 
@@ -216,6 +217,8 @@ CIT = {"act": "BNS", "section_number": "357", "title": "T", "summary": "S", "sco
 
 
 def legal_graph_run(monkeypatch, text, calls, request_id="g"):
+    supports_everything(monkeypatch)
+
     async def fake(question, act_filter):
         calls.append(question)
         return {"answer": f"Answer to {question}", "citations": [CIT]}
@@ -274,6 +277,7 @@ def test_graph_does_not_cache_a_failed_or_escalated_answer(monkeypatch):
 
 def test_graph_does_not_cache_sequential_runs(monkeypatch):
     cache_module.set_cache(make())
+    supports_everything(monkeypatch)
     async def fake(*a, **k): return {"answer": "A", "citations": [CIT]}
     monkeypatch.setattr(legal_compliance, "ask_legal_question", fake)
     final = build_graph().invoke(new_state("s1", Q, department_sequence=["legal_compliance"]))

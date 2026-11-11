@@ -17,16 +17,18 @@ No caching, by design: a replayed HS code without a fresh TradeStat check is not
 import asyncio
 from typing import Optional
 
-from contract import DepartmentResult, Evidence, service_error
+from contract import DepartmentResult, Evidence, service_error, truncate, with_feedback
 from niryat_mcp import ask_export_question, get_trade_data
 
 DEPARTMENT = "export_compliance"
 
 
-def run_export(raw_input: str, fields: Optional[dict]) -> DepartmentResult:
+def run_export(raw_input: str, fields: Optional[dict], feedback: Optional[str] = None) -> DepartmentResult:
     product = (fields or {}).get("product_description") or raw_input
 
-    proposal = asyncio.run(ask_export_question(f"What is the HS code for {product}?"))
+    proposal = asyncio.run(
+        ask_export_question(with_feedback(f"What is the HS code for {product}?", feedback))
+    )
     if "error" in proposal:
         return DepartmentResult(
             department=DEPARTMENT, status="failed", error=service_error("niryat_chat", proposal)
@@ -66,7 +68,13 @@ def run_export(raw_input: str, fields: Optional[dict]) -> DepartmentResult:
     record = verification["data"][0]
     commodity = record.get("Commodity", "")
     signal = (verification.get("intel") or {}).get("signal")
-    answer = f"HS code {hs_code}: {commodity}." if commodity else f"HS code {hs_code}."
+    # The answer says which product the code is for, so "this code matches what was asked" is a
+    # claim the verifier can test against the TradeStat commodity text.
+    answer = (
+        f"HS code {hs_code} applies to {truncate(product, 200)}; TradeStat lists it as: {commodity}."
+        if commodity
+        else f"HS code {hs_code} applies to {truncate(product, 200)}."
+    )
     if signal:
         answer += f" Market signal: {signal}"
     return DepartmentResult(

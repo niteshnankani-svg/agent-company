@@ -8,8 +8,6 @@ from orchestrator import orchestrator_node
 from state import GraphState, audit_entry, new_state, result_update
 from verifier import verifier_node
 
-MAX_RETRIES = 3
-
 # department name -> graph node name
 HEAD_NODES = {
     "finance": "finance_head",
@@ -30,6 +28,7 @@ def make_head_node(department: str):
             state.get("department_fields"),
             state.get("sub_department"),
             bool(state.get("follow_up")),
+            state.get("feedback"),
         )
         return result_update(state, node_name, result)
 
@@ -121,6 +120,8 @@ def cache_lookup_node(state: GraphState) -> dict:
         )
     ]
     update["cache_hit"] = True
+    # Only verified answers are ever stored, so a hit was verified when it was stored.
+    update["verification"] = {"status": "verified", "check": "cached"}
     return update
 
 
@@ -139,6 +140,8 @@ def cache_store_node(state: GraphState) -> dict:
     result = DepartmentResult.from_state(raw)
     text, scope = cache_key(department, state)
     reason = why_not_cacheable(department, text, result)
+    if reason is None and (state.get("verification") or {}).get("status") != "verified":
+        reason = "only verified answers are cached"
     if reason is None:
         cache, note = get_cache()
         if cache is None:
@@ -149,28 +152,29 @@ def cache_store_node(state: GraphState) -> dict:
     return {"audit_trail": [audit_entry(state, "cache_store", status, reason=reason)]}
 
 
-# A failed verification retries the department that produced the result.
-# (Replaced in Phase 4: retry only with specific feedback, at most once.)
 def route_after_verifier(state: GraphState) -> str:
-    if state["verifier_result"] == "pass":
+    """pass -> remember it; retry -> the same department, now with feedback; fail -> a person.
+
+    On "fail" the verifier has already withdrawn the answer (it is ``needs_human`` by now).
+    """
+    outcome = state["verifier_result"]
+    if outcome == "pass":
         return "cache_store"
-    if state["retry_count"] >= MAX_RETRIES:
-        return "human_review"
-    # Unknown/unset active_department fails closed to human review.
-    return HEAD_NODES.get(state.get("active_department"), "human_review")
+    if outcome == "retry":
+        # Unknown/unset active_department fails closed to human review.
+        return HEAD_NODES.get(state.get("active_department"), "human_review")
+    return "human_review"
 
 
 def human_review_node(state: GraphState) -> dict:
     """Where every request a machine cannot finish ends up.
 
-    Reached when the router could not pick a department, or the verifier kept
-    failing. It always yields a ``needs_human`` result with a reason. Today it
-    records the hand-off and ends the run; Phase 5 makes it pause the run with
-    ``interrupt()`` until a person decides.
+    Reached when the router could not pick a department, or the verifier withdrew an answer
+    (the result it left behind is already ``needs_human``, with the draft and its findings).
+    It always yields a ``needs_human`` result with a reason. Today it records the hand-off and
+    ends the run; Phase 5 makes it pause the run with ``interrupt()`` until a person decides.
     """
-    reason = state.get("escalation_reason") or (
-        "verifier_failed" if state.get("verifier_result") == "fail" else "unspecified"
-    )
+    reason = state.get("escalation_reason") or "unspecified"
     update: dict = {
         "escalation_reason": reason,
         "audit_trail": [audit_entry(state, "human_review", "needs_human", reason=reason)],

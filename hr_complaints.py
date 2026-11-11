@@ -20,7 +20,7 @@ from typing import Any, Optional
 from typesafe_sdk import Noul
 
 from clients import get_typesafe_client
-from contract import DepartmentResult, Evidence, service_error
+from contract import DepartmentResult, Evidence, service_error, with_feedback
 from hr_agent_mcp import ask_hr_agent
 
 DEPARTMENT = "hr_complaints"
@@ -59,7 +59,7 @@ def _evidence_from_agent(raw: Any) -> list[Evidence]:
     return [Evidence(source=source, text=str(raw))]
 
 
-def run_hr(raw_input: str, fields: Optional[dict]) -> DepartmentResult:
+def run_hr(raw_input: str, fields: Optional[dict], feedback: Optional[str] = None) -> DepartmentResult:
     text = (fields or {}).get("complaint_text") or raw_input
 
     try:
@@ -84,7 +84,8 @@ def run_hr(raw_input: str, fields: Optional[dict]) -> DepartmentResult:
             ],
         )
 
-    result = asyncio.run(ask_hr_agent(text))
+    # The complaint gate above saw the original text only; feedback goes to the HR agent alone.
+    result = asyncio.run(ask_hr_agent(with_feedback(text, feedback)))
     if "error" in result:
         return DepartmentResult(
             department=DEPARTMENT,

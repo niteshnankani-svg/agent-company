@@ -55,8 +55,28 @@ export const REASON_TEXT: Record<string, string> = {
   hr_agent_returned_no_evidence: "An answer was produced but without evidence, so it is not released.",
   request_not_classified: "The system could not tell which team should handle this.",
   classifier_unavailable: "The service that decides where requests go is unavailable.",
-  verifier_failed: "The answer could not be verified.",
+  verification_failed:
+    "The answer was checked against its evidence and some statements were not supported, so it was not released. The draft is shown for the reviewer.",
+  verification_unavailable: "The check against the evidence could not run, so the answer was not released.",
+  invalid_result: "The system produced a result it could not use.",
 };
+
+// How to describe the verification state to a user. `unchecked` is never presented as a pass.
+export function verificationText(v: { status: string; check: string } | null | undefined): { text: string; tone: "good" | "warn" } | null {
+  if (!v || v.status === "not_applicable" || v.status === "failed" || v.status === "retrying") return null;
+  if (v.status === "verified") {
+    return {
+      text: v.check === "cached" ? "Checked against its evidence when first answered; this answer was reused." : "Checked: every statement is supported by the evidence below.",
+      tone: "good",
+    };
+  }
+  const why: Record<string, string> = {
+    rule_based: "This result comes from fixed rules, not a written answer.",
+    no_source_material: "This team does not provide its sources, so the answer could not be checked.",
+    checker_unavailable: "The checker was unavailable.",
+  };
+  return { text: `Not independently checked. ${why[v.check] ?? ""}`.trim(), tone: "warn" };
+}
 
 export function reasonText(reason: string | null | undefined): string | null {
   if (!reason) return null;

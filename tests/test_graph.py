@@ -8,10 +8,11 @@ import legal_compliance
 import orchestrator
 from contract import DepartmentResult
 from graph import (
-    HEAD_NODES, MAX_RETRIES, build_graph, human_review_node, make_head_node,
+    HEAD_NODES, build_graph, human_review_node, make_head_node,
     orchestrator_entry_node, route_after_orchestrator, route_after_sequence_step,
     route_after_verifier, sequence_step,
 )
+from helpers import supports_everything
 from state import audit_entry, new_state
 from verifier import verifier_node
 
@@ -65,7 +66,7 @@ def test_orchestrator_llm_fallback_returns_the_new_budget_instead_of_mutating(mo
     assert update["llm_budget_remaining"] == 4 and state["llm_budget_remaining"] == 5
 
 
-def test_verifier_is_pure_and_checks_structure():
+def test_verifier_is_pure_and_fails_a_missing_or_malformed_result():
     ok = new_state("r4", "x")
     ok["department_result"] = DepartmentResult(department="d", status="needs_human", reason="x").to_state()
     update = assert_pure(verifier_node, ok)
@@ -75,7 +76,7 @@ def test_verifier_is_pure_and_checks_structure():
         s = new_state("r5", "x")
         s["department_result"] = bad
         update = assert_pure(verifier_node, s)
-        assert update["verifier_result"] == "fail" and update["retry_count"] == 1
+        assert update["verifier_result"] == "fail" and update["escalation_reason"] == "invalid_result"
 
 
 def test_verifier_passes_every_valid_status_it_does_not_judge_truth_yet():
@@ -104,20 +105,19 @@ def test_human_review_node_is_pure_and_always_yields_needs_human_with_a_reason()
     assert update["audit_trail"][0]["node"] == "human_review"
 
 
-def test_human_review_after_verifier_cap_keeps_the_unverified_result_and_says_why():
+def test_human_review_after_a_withdrawn_answer_keeps_the_held_result_and_says_why():
     state = new_state("r7b", "x")
-    kept = DepartmentResult(department="legal_compliance", status="answered", answer="A",
-                            evidence=[__import__("contract").Evidence(source="s", text="t")]).to_state()
-    state.update(department_result=kept, verifier_result="fail", active_department="legal_compliance")
+    held = DepartmentResult(department="legal_compliance", status="needs_human", reason="verification_failed", answer="draft").to_state()
+    state.update(department_result=held, escalation_reason="verification_failed", active_department="legal_compliance")
     update = assert_pure(human_review_node, state)
-    assert "department_result" not in update  # the department's own result is left in place
-    assert update["escalation_reason"] == "verifier_failed"
+    assert "department_result" not in update  # the department's own held result is left in place
+    assert update["escalation_reason"] == "verification_failed"
 
 
 def test_an_unexpected_exception_in_a_department_becomes_failed_not_a_crash(monkeypatch):
     import departments
 
-    def boom(raw, fields, sub, follow_up): raise ValueError("secret detail that must not leak")
+    def boom(raw, fields, sub, follow_up, feedback): raise ValueError("secret detail that must not leak")
     monkeypatch.setitem(departments.RUNNERS, "finance", boom)
     update = make_head_node("finance")(new_state("r9", "x"))
     result = DepartmentResult.from_state(update["department_result"])
@@ -139,14 +139,12 @@ def test_sequence_routing():
     assert route_after_sequence_step({"department_sequence": []}) == "done"
 
 
-def test_verifier_routing_pass_retry_cap_and_unknown():
-    for n in (0, 1, MAX_RETRIES + 2):
-        assert route_after_verifier({"verifier_result": "pass", "retry_count": n}) == "cache_store"
+def test_verifier_routing_pass_retry_and_fail():
+    assert route_after_verifier({"verifier_result": "pass"}) == "cache_store"
     for dept, node in HEAD_NODES.items():
-        for n in range(MAX_RETRIES):
-            assert route_after_verifier({"verifier_result": "fail", "retry_count": n, "active_department": dept}) == node
-        assert route_after_verifier({"verifier_result": "fail", "retry_count": MAX_RETRIES, "active_department": dept}) == "human_review"
-    assert route_after_verifier({"verifier_result": "fail", "retry_count": 0, "active_department": None}) == "human_review"
+        assert route_after_verifier({"verifier_result": "retry", "active_department": dept}) == node
+    assert route_after_verifier({"verifier_result": "retry", "active_department": None}) == "human_review"
+    assert route_after_verifier({"verifier_result": "fail"}) == "human_review"
 
 
 def test_entry_node_skips_classification_for_an_explicit_sequence(monkeypatch):
@@ -161,6 +159,7 @@ def run(state):
 
 
 def test_end_to_end_legal_answered(monkeypatch):
+    supports_everything(monkeypatch)
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: ("legal_compliance", 0.9))
     monkeypatch.setattr(legal_compliance, "ask_legal_question", returns({"answer": "Section 357 ...", "citations": [CIT]}))
     final = run(new_state("e1", "What is Section 357 of BNS about?"))
@@ -169,6 +168,7 @@ def test_end_to_end_legal_answered(monkeypatch):
     assert [e["node"] for e in final["audit_trail"]] == [
         "orchestrator", "cache_lookup", "legal_head", "verifier", "cache_store"]
     assert final["verifier_result"] == "pass" and final["retry_count"] == 0
+    assert final["verification"]["status"] == "verified"
 
 
 def test_end_to_end_finance_without_fields_asks_for_them(monkeypatch):
@@ -210,6 +210,7 @@ def test_end_to_end_classifier_outage_is_reported_as_such_not_a_crash(monkeypatc
 
 
 def test_end_to_end_sequence_includes_legal_and_keeps_history(monkeypatch):
+    supports_everything(monkeypatch)
     monkeypatch.setattr(legal_compliance, "ask_legal_question", returns({"answer": "A", "citations": [CIT]}))
     final = run(new_state(
         "e5", "text", department_sequence=["legal_compliance", "finance"],
@@ -223,6 +224,7 @@ def test_end_to_end_sequence_includes_legal_and_keeps_history(monkeypatch):
 # --------------------------------------------------------------------------- API
 def test_api_response_is_the_contract(monkeypatch):
     pytest.importorskip("fastapi")
+    supports_everything(monkeypatch)
     from fastapi.testclient import TestClient
 
     import api
@@ -230,7 +232,7 @@ def test_api_response_is_the_contract(monkeypatch):
     monkeypatch.setattr(orchestrator, "local_classify", lambda t: ("legal_compliance", 0.9))
     monkeypatch.setattr(legal_compliance, "ask_legal_question", returns({"answer": "Section 357 ...", "citations": [CIT]}))
     body = TestClient(api.app).post("/request", json={"request_id": "a1", "raw_input": "What is Section 357 of BNS about?"}).json()
-    assert set(body) == {"request_id", "result", "needs_human", "escalation_reason", "department_history", "audit_trail"}
+    assert set(body) == {"request_id", "result", "needs_human", "verification", "escalation_reason", "department_history", "audit_trail"}
     assert DepartmentResult.model_validate(body["result"]).status == "answered"
     assert body["needs_human"] is False
 

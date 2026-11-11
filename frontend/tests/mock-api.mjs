@@ -15,8 +15,8 @@ const base = (department, status, rest) => ({
   department, status, answer: null, evidence: [], confidence: { kind: "none", value: null },
   missing_fields: [], error: null, reason: null, ...rest,
 });
-const reply = (id, result, nodes) => ({
-  request_id: id, result, needs_human: result.status === "needs_human",
+const reply = (id, result, nodes, verification = null) => ({
+  request_id: id, result, needs_human: result.status === "needs_human", verification,
   escalation_reason: null, department_history: [], audit_trail: trail(id, nodes),
 });
 
@@ -50,7 +50,20 @@ function respond(text, id) {
       answer: "Section 357 of the BNS covers **breach of contract** to attend on a helpless person.",
       evidence: [{ source: "legal_rag:BNS Section 357", text: "Breach of contract: punishes failing to supply the wants of a helpless person.", data: { score: 0.64 } }],
       confidence: { kind: "retrieval_score", value: 0.64 },
-    }), [{ node: "legal_head", status: "answered", request_id: id }]);
+    }), [{ node: "legal_head", status: "answered", request_id: id }], { status: "verified", check: "claims" });
+  if (text.includes("unchecked-backend"))
+    return reply(id, base("backend_ticketing", "answered", {
+      answer: "Hold the power button for ten seconds.",
+      evidence: [{ source: "ticketing_agent", text: null, data: { category: "hardware" } }],
+    }), [], { status: "unchecked", check: "no_source_material" });
+  if (text.includes("withdrawn"))
+    return reply(id, base("legal_compliance", "needs_human", {
+      reason: "verification_failed", answer: "The fine is five thousand rupees.",
+      evidence: [
+        { source: "legal_rag:BNS Section 357", text: "Breach of contract to attend on a helpless person.", data: null },
+        { source: "verifier", text: "- \"the fine is five thousand rupees\" (not found in the evidence)", data: null },
+      ],
+    }), [], { status: "failed", check: "claims" });
   if (text.includes("answered-hr"))
     return reply(id, base("hr_complaints", "answered", {
       answer: "There are 1035 employees in Sales.",

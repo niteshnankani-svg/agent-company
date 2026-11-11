@@ -55,6 +55,9 @@ export interface AgentResponse {
   request_id: string;
   result: DepartmentResult;
   needs_human: boolean;
+  // How the answer was checked against its evidence. `unchecked` means nobody checked it, and the
+  // UI must say so. `check` says why (rule_based, no_source_material, checker_unavailable, claims, cached...).
+  verification: { status: "verified" | "unchecked" | "not_applicable" | "failed" | "retrying"; check: string } | null;
   escalation_reason: string | null;
   department_history: { department: string; result: DepartmentResult }[];
   audit_trail: AuditTrailEntry[];

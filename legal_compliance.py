@@ -17,7 +17,7 @@ from typing import Optional
 
 from pydantic import ValidationError
 
-from contract import Confidence, DepartmentResult, Evidence, service_error
+from contract import Confidence, DepartmentResult, Evidence, service_error, with_feedback
 from legal_rag_mcp import ask_legal_question
 
 DEPARTMENT = "legal_compliance"
@@ -39,10 +39,10 @@ def _citation_evidence(citation: dict) -> Optional[Evidence]:
         return None
 
 
-def run_legal(raw_input: str, fields: Optional[dict]) -> DepartmentResult:
+def run_legal(raw_input: str, fields: Optional[dict], feedback: Optional[str] = None) -> DepartmentResult:
     fields = fields or {}
     result = asyncio.run(
-        ask_legal_question(fields.get("question") or raw_input, fields.get("act_filter"))
+        ask_legal_question(with_feedback(fields.get("question") or raw_input, feedback), fields.get("act_filter"))
     )
     if "error" in result:
         return DepartmentResult(

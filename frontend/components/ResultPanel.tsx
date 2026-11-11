@@ -1,7 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentResponse, Evidence } from "@/lib/types";
-import { reasonText, statusMeta } from "@/lib/accents";
+import { reasonText, statusMeta, verificationText } from "@/lib/accents";
 
 const LABEL = "mb-1 font-mono text-[10px] uppercase tracking-wider";
 
@@ -50,6 +50,7 @@ export default function ResultPanel({ response }: { response: AgentResponse }) {
   const { result } = response;
   const meta = statusMeta(result.status);
   const reason = reasonText(result.reason);
+  const verification = verificationText(response.verification);
   const cacheHit = response.audit_trail.find((e) => e.node === "cache_lookup" && e.status === "hit");
 
   return (
@@ -73,6 +74,18 @@ export default function ResultPanel({ response }: { response: AgentResponse }) {
         {result.status === "answered" && result.answer && (
           <div data-testid="result-answer">
             <Markdown text={result.answer} />
+          </div>
+        )}
+
+        {result.status === "answered" && verification && (
+          <div
+            data-testid="result-verification"
+            data-tone={verification.tone}
+            className="font-mono text-[11.5px]"
+            style={{ color: verification.tone === "good" ? "var(--source-cache)" : "var(--source-llm)" }}
+          >
+            {verification.tone === "good" ? "✓ " : "! "}
+            {verification.text}
           </div>
         )}
 

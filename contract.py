@@ -171,6 +171,13 @@ def truncate(text: Any, limit: int = 300) -> str:
     return s if len(s) <= limit else s[: limit - 1] + "…"
 
 
+def with_feedback(text: str, feedback: Optional[str]) -> str:
+    """Append the verifier's feedback to a question, clearly marked, for a department's second attempt."""
+    if not feedback:
+        return text
+    return f"{text}\n\n[Reviewer feedback on your previous attempt: {truncate(feedback, 800)}]"
+
+
 def service_error(service: str, payload: dict) -> str:
     """Turn a wrapper's ``{"error": ..., "detail": ...}`` into a short reason."""
     code = payload.get("error", "unknown_error")

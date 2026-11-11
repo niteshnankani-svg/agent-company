@@ -298,3 +298,61 @@ One entry per design choice: what was chosen, what was rejected, why, and what b
 **Chosen:** extraction is a generic mechanism (field definitions, grounding, coercion), but only Finance needs structured input. HR, Backend and Legal send free text to their services; Export sends a product description, and its service takes the whole sentence.
 
 **Rejected:** extracting a product name for Export. It would add a model call and a new failure mode to a department that already works on free text. It is a clear next step if the HS-code question template ("What is the HS code for <whole sentence>?") proves awkward in real use.
+
+---
+
+# Phase 4 — a verifier that verifies
+
+## D-033 — The verifier checks claims against the evidence text, and its own verdicts are checked
+
+**Chosen:** for an `answered` result from HR, Export or Legal, a model lists the factual claims in the answer and judges each against the evidence text only (each evidence item's source, text and data, bounded to 16,000 characters), through a forced tool call at temperature 0, with question, answer and evidence fenced as data. A "supported" verdict must quote the evidence, and **code checks the quote really is in the evidence**; otherwise the verdict is downgraded to "not in evidence". Any claim that is contradicted or not in the evidence fails the answer. A checker that returns no usable claims is treated as a failure to check, never as a pass. Model: `VERIFIER_MODEL_ID` (defaults to the router's Haiku).
+
+**Rejected:** (a) the old check (decision, confidence, rationale and labels, "internal consistency" only, and only inside a confidence band); (b) trusting the checker's verdicts without grounding (an LLM judge that says "supported" with no proof is the same weakness as the thing it checks); (c) a numeric-overlap heuristic as the main check (it would flag legitimate numbers the evidence summary does not contain).
+
+**What this does not make true:** the checker is itself a model. Quote-grounding removes invented support, not misjudged support. Mutation tests confirm the code-level guards (quote check, retry cap, withdrawal, "unchecked" labelling) each fail loudly if broken; they cannot show the model judges well. That needs the live eval (Phase 7).
+
+**At 100x load:** one extra Haiku call per answered HR/Export/Legal result, two if retried, counted against the per-request LLM budget (5). A Bedrock slowdown now directly slows every answer; see D-037.
+
+## D-034 — What is never sent to the checker, and how "unchecked" is reported
+
+**Chosen:** results that are not `answered` (needs_human, needs_more_info, failed) are not checked: there is no answer to verify. Finance is rule-based (a deterministic policy outcome). Backend returns no source material (the ticketing agent gives a category and an answer, nothing to check against). Finance and Backend answers pass with `verification: {status: "unchecked", ...}`. The API returns `verification` and the UI says "Not independently checked" and why. Nothing is ever labelled "verified" unless a claim check or a cached verified answer backs it.
+
+**Rejected:** passing Backend silently as if verified; sending it to the checker with no evidence (the checker would mark everything "not in evidence" and every Backend answer would be withdrawn).
+
+**Consequence you may not like:** a Backend answer is released without any independent check. That is the honest state of what that service exposes. The fix is on the service side (return its sources), not in this repo.
+
+## D-035 — One retry, only with specific feedback, and only where feedback can be used
+
+**Chosen:** the blind retry (same department, same input, up to 3 attempts) is gone. On a failed claim check, HR, Export and Legal get exactly one retry, and the department receives the specific unsupported claims (for example: "the fine is five thousand rupees: not found in the evidence"). The feedback is added to the question sent to the service in a clearly marked bracketed note. HR's complaint gate does not see it. Export's answer now states which product the code is for, so "this code matches what was asked" is a testable claim and a mismatch produces specific feedback. Finance, Backend, unknown departments, and any `failed` result are never retried.
+
+**Rejected:** keeping a cap of 3 (nothing new is learned between identical attempts); retrying without feedback; retrying `failed` results (that only repeats a slow call against a service that is down).
+
+**Unverified:** whether the Legal RAG, NiryatAI and HR agent services actually use the appended note to produce a better answer. I could not test any of them. The mechanism is tested; its effectiveness is for the live eval.
+
+## D-036 — An answer that fails verification is withdrawn, never released as `answered`
+
+**Chosen:** after the one retry, or immediately for a department with no retry, a failing result is rewritten to `needs_human` with reason `verification_failed`. The draft answer is kept (clearly labelled "not verified" in the UI) and the verifier's findings are appended to the evidence as a `verifier` item, so the reviewer sees exactly which statements were unsupported.
+
+**Rejected:** leaving the result as `answered` with a flag (the earlier design did this and the UI/API would show an unverified answer as an answer).
+
+## D-037 — If the checker itself is unavailable, the default is to withhold the answer
+
+**Chosen:** a checker error, no LLM budget, or an unusable reply withdraws the answer with reason `verification_unavailable`. `VERIFIER_ON_UNAVAILABLE=release_unchecked` is available for a deliberately degraded deployment: answers are then released labelled `unchecked`, and are never cached.
+
+**Rejected:** failing open by default. HR, Export and Legal are the departments where a wrong answer matters, and "nobody could check it" should not look the same as "it was checked".
+
+**At 100x load / outage:** a Bedrock outage turns every HR, Export and Legal answer into a human review. That is the intended fail-closed behaviour but it needs an operator alert; Phase 6's `/ready` will report it.
+
+## D-038 — Only verified answers are cached
+
+**Chosen:** `cache_store` requires `verification.status == "verified"`. An answer released as `unchecked` is not stored. A cache hit is labelled verified because only verified answers are ever stored.
+
+## D-039 — Expect a high escalation rate for Legal until its evidence improves
+
+**Why:** the Legal service exposes each retrieved section's title and a short summary, not the raw statute text (D-008). The answer was generated from the full text. A claim the answer makes that appears only in the full text will be "not in evidence" against a summary, so the check will withdraw some correct answers. That is the honest consequence of checking against what we can actually see.
+
+**What fixes it:** have `legal-rag-chatbot` return the retrieved passage text in its citations; `Evidence.text` then carries it with no change here. I cannot measure the real rate without that service. Treat the first live eval run as the measurement.
+
+## D-040 — Scope limits
+
+The sequential mode (`department_sequence`) still verifies only the last department's result, as before. The `llm_budget_remaining` of 5 per request covers routing plus up to two verifications; a request that needs more fails closed (`verification_unavailable`) rather than skipping the check.

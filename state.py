@@ -29,7 +29,11 @@ class GraphState(TypedDict):
     sub_department: Optional[str]
     # A DepartmentResult as a plain dict (see contract.DepartmentResult.to_state).
     department_result: Optional[dict]
-    verifier_result: Optional[str]
+    verifier_result: Optional[str]  # pass | retry | fail
+    # Specific feedback from the verifier for the department's one retry.
+    feedback: Optional[str]
+    # How the final result was checked: {status: verified|unchecked|not_applicable|failed, check: ...}
+    verification: Optional[dict]
     cache_hit: bool
     retry_count: int
     escalation_reason: Optional[str]
@@ -63,6 +67,8 @@ def new_state(
         "sub_department": sub_department,
         "department_result": None,
         "verifier_result": None,
+        "feedback": None,
+        "verification": None,
         "cache_hit": False,
         "retry_count": 0,
         "escalation_reason": None,

@@ -92,6 +92,7 @@ async def handle_request(req: DepartmentRequest):
             "request_id": final["request_id"],
             "result": result.to_state(),
             "needs_human": result.status == "needs_human",
+            "verification": final.get("verification"),
             "escalation_reason": final.get("escalation_reason"),
             "department_history": final.get("department_history") or [],
             "audit_trail": final["audit_trail"],

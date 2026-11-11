@@ -31,6 +31,33 @@ test("answered: shows the answer, the evidence relied on, and a labelled retriev
   await expect(page.getByTestId("result-confidence")).toContainText("not the chance the answer is right");
 });
 
+test("a verified answer says it was checked against the evidence", async ({ page }) => {
+  await ask(page, "answered-legal What is Section 357 of BNS about?");
+  const v = page.getByTestId("result-verification");
+  await expect(v).toHaveAttribute("data-tone", "good");
+  await expect(v).toContainText("every statement is supported by the evidence");
+});
+
+test("an unchecked answer is never presented as checked", async ({ page }) => {
+  await ask(page, "unchecked-backend laptop");
+  await expect(page.getByTestId("result-status")).toHaveAttribute("data-status", "answered");
+  const v = page.getByTestId("result-verification");
+  await expect(v).toHaveAttribute("data-tone", "warn");
+  await expect(v).toContainText("Not independently checked");
+  await expect(v).toContainText("does not provide its sources");
+  await expect(v).not.toContainText("Checked:");
+});
+
+test("an answer withdrawn by the verifier is not shown as an answer; the draft and findings go to the reviewer", async ({ page }) => {
+  await ask(page, "withdrawn what is the fine");
+  await expect(page.getByTestId("result-status")).toHaveAttribute("data-status", "needs_human");
+  await expect(page.getByTestId("result-answer")).toHaveCount(0);
+  await expect(page.getByTestId("result-verification")).toHaveCount(0);
+  await expect(page.getByTestId("result-needs-human")).toContainText("some statements were not supported");
+  await expect(page.getByText("draft for the reviewer (not verified)")).toBeVisible();
+  await expect(page.getByText("verifier", { exact: true })).toBeVisible();
+});
+
 test("answered with no real confidence number shows none", async ({ page }) => {
   await ask(page, "answered-hr how many in sales");
   await expect(page.getByTestId("result-status")).toHaveAttribute("data-status", "answered");
