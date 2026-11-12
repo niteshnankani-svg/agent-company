@@ -52,6 +52,16 @@ Service addresses and timeouts are in [`docs/SERVICES.md`](docs/SERVICES.md).
 
 You need Python 3.11+, Node 22+, and, for real routing, a TypeSafe key and an Anthropic API key (`ANTHROPIC_API_KEY`).
 
+One command starts the API and the console together, with no AWS and no Vercel:
+
+```bash
+./scripts/run_local.sh      # API on :8080, console on :3000, Ctrl-C stops both
+```
+
+The first run creates `.venv`, installs both sides, and writes `.env` and `frontend/.env.local` (git-ignored) with a
+generated API key shared by the two. It never overwrites an existing file. Then edit `.env` to add `ANTHROPIC_API_KEY`,
+`TYPESAFE_API_KEY` and your service addresses, and run it again. The steps below are the same thing done by hand.
+
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
