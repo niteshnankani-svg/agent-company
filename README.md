@@ -50,19 +50,59 @@ Service addresses and timeouts are in [`docs/SERVICES.md`](docs/SERVICES.md).
 
 ## Run it locally
 
-You need Python 3.11+, Node 22+, and, for real routing, a TypeSafe key and AWS credentials for Bedrock.
+You need Python 3.11+, Node 22+, and, for real routing, a TypeSafe key and an Anthropic API key (`ANTHROPIC_API_KEY`).
+
+One command starts the API and the console together, with no AWS and no Vercel:
+
+```bash
+./scripts/run_local.sh      # API on :8080, console on :3000, Ctrl-C stops both
+```
+
+The first run creates `.venv`, installs both sides, and writes `.env` and `frontend/.env.local` (git-ignored) with a
+generated API key shared by the two. It never overwrites an existing file. Then edit `.env` to add `ANTHROPIC_API_KEY`,
+`TYPESAFE_API_KEY` and your service addresses, and run it again. The steps below are the same thing done by hand.
+
+The department services are separate projects. To run the Legal one on the same machine
+(`github.com/niteshnankani-svg/legal-rag-chatbot`, API only, needs Python 3.11 or 3.12 and an OpenAI key):
+
+```bash
+./scripts/run_legal_local.sh   # clones it next to this folder, installs, downloads its index, serves on :8102
+```
+
+then set `LEGAL_QUERY_URL=http://localhost:8102/query` in `.env` and restart `run_local.sh`.
+
+The Backend department's ticketing service (`github.com/niteshnankani-svg/Multi_agent_ticketing_system`) runs the same way:
+
+```bash
+./scripts/run_ticketing_local.sh   # serves on :8103; copies TYPESAFE_API_KEY and ANTHROPIC_API_KEY from this .env
+```
+
+then set `TICKETING_URL=http://localhost:8103/ticket`. Tested here as far as install and import: the sandbox could not
+download its embedding model, so it has not been started.
+
+And the Export department's NiryatAI backend (`github.com/niteshnankani-svg/niryat-ai`):
+
+```bash
+./scripts/run_niryat_local.sh   # serves on :8104; copies ANTHROPIC_API_KEY from this .env
+```
+
+then set `NIRYAT_CHAT_URL=http://localhost:8104/chat` and `NIRYAT_TRADEDATA_URL=http://localhost:8104/tradedata`. Its
+study-material knowledge base is built from documents that are not in the repository, so it starts empty (only the 12
+committed video summaries are loaded). `/tradedata` queries the government TradeStat site live, so it needs internet. Tested here only as far as
+install and boot: the sandbox could not download the index, and no real question has been answered.
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # then edit: service addresses, TYPESAFE_API_KEY, API_KEYS
+cp .env.example .env          # then edit: service addresses, TYPESAFE_API_KEY, ANTHROPIC_API_KEY, API_KEYS
 set -a && . ./.env && set +a
 uvicorn api:app --port 8080
 ```
 
 Without service addresses a department returns `failed: not_configured`, and without the router key every request
-goes to a person with the reason `classifier_unavailable`. Both are clear, nothing crashes. `GET /ready` shows
-what is and is not set up.
+goes to a person with the reason `classifier_unavailable`. Without `ANTHROPIC_API_KEY` the router fallback and Finance
+extraction are unavailable and the verifier cannot check, so HR, Export and Legal answers are withheld for a person
+(`verification_unavailable`). All are clear, nothing crashes. `GET /ready` shows what is and is not set up.
 
 For local development only, `AGENT_AUTH_DISABLED=true` switches API-key authentication off.
 
@@ -173,7 +213,7 @@ Details: [`evals/README.md`](evals/README.md). No eval has been run against real
 | `review.py`, `review_store.py`, `runtime.py` | Human decisions, the review inbox, and durable storage |
 | `frontend/` | The console |
 | `tests/`, `evals/` | Tests (offline) and the live eval (yours to run) |
-| `train_ap_classifier.py`, `synthetic_data_generator.py`, `models/`, `syntheic_data/` | Offline training material for a finance model that is **not used** by the running system. Left in place; see `DECISIONS.md` |
+| `train_ap_classifier.py`, `synthetic_data_generator.py`, `syntheic_data/` | Offline scripts and data for a finance model that is **not used** by the running system. The trained pickles were deleted (`DECISIONS.md` D-063) |
 
 ## What is not true yet
 

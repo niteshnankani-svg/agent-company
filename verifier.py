@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 from pydantic import ValidationError
 
-from clients import ROUTER_MODEL_ID, get_bedrock_client
+from clients import ROUTER_MODEL_ID, get_anthropic_client
 from contract import DepartmentResult, Evidence, truncate
 from extraction import _norm
 from state import GraphState, audit_entry
@@ -113,7 +113,7 @@ def evidence_text(evidence: list[Evidence]) -> str:
 
 
 def _call_checker(question: str, answer: str, evidence: str) -> dict:
-    response = get_bedrock_client().messages.create(
+    response = get_anthropic_client().messages.create(
         model=VERIFIER_MODEL_ID,
         max_tokens=1500,
         temperature=0,

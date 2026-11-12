@@ -8,7 +8,7 @@ import cache as cache_module
 import legal_compliance
 import orchestrator
 from cache import (
-    BedrockEmbedder, SemanticCache, discriminators, embedder_from_env, why_not_cacheable,
+    LocalEmbedder, SemanticCache, discriminators, embedder_from_env, why_not_cacheable,
 )
 from contract import DepartmentResult, Evidence
 from graph import build_graph
@@ -179,25 +179,13 @@ def test_policy_is_checked_before_the_embedder_is_called():
 
 
 # ------------------------------------------------------------------------ embedders
-def test_bedrock_embedder_sends_titan_format_and_parses_the_reply():
-    import io, json
-
-    class Client:
-        def invoke_model(self, **kw):
-            self.kw = kw
-            return {"body": io.BytesIO(json.dumps({"embedding": [0.1, 0.2, 0.3]}).encode())}
-
-    client = Client()
-    emb = BedrockEmbedder("amazon.titan-embed-text-v2:0", "us-east-1", client=client)
-    assert emb.embed("hello") == [0.1, 0.2, 0.3]
-    assert client.kw["modelId"] == "amazon.titan-embed-text-v2:0"
-    assert json.loads(client.kw["body"]) == {"inputText": "hello", "normalize": True}
-
-
 def test_embedder_from_env(monkeypatch):
     assert embedder_from_env()[0] is None  # nothing configured -> cache off
-    monkeypatch.setenv("EMBEDDING_PROVIDER", "bedrock")
-    assert isinstance(embedder_from_env()[0], BedrockEmbedder)
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "local")
+    assert isinstance(embedder_from_env()[0], LocalEmbedder)
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "bedrock")  # removed with AWS: now an unknown provider, cache stays off
+    emb, note = embedder_from_env()
+    assert emb is None and "bedrock" in note
     monkeypatch.setenv("EMBEDDING_PROVIDER", "typo")
     emb, note = embedder_from_env()
     assert emb is None and "typo" in note
@@ -207,7 +195,7 @@ def test_get_cache_is_off_without_a_provider_and_built_from_env_with_one(monkeyp
     cache_module._cache_ready = False
     assert cache_module.get_cache()[0] is None
     cache_module._cache_ready = False
-    monkeypatch.setenv("EMBEDDING_PROVIDER", "bedrock")
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "local")
     monkeypatch.setenv("CACHE_TTL_SECONDS", "123")
     monkeypatch.setenv("CACHE_SIMILARITY_THRESHOLD", "0.97")
     built, _ = cache_module.get_cache()

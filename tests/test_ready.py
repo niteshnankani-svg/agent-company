@@ -22,6 +22,8 @@ def env(monkeypatch):
     monkeypatch.delenv("AGENT_AUTH_DISABLED", raising=False)
     monkeypatch.setenv("API_KEYS", "console:client:" + "k" * 30)
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-value-not-real")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-value-not-real")
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("READY_CACHE_SECONDS", "0")
     for k, v in URLS.items():
         monkeypatch.setenv(k, v)
@@ -50,7 +52,8 @@ def test_everything_reachable_is_ready(client):
     assert r.status_code == 200 and body["status"] == "ready"
     assert {d: v["status"] for d, v in body["departments"].items()} == {
         "finance": "ok", "hr_complaints": "ok", "backend_ticketing": "ok", "export_compliance": "ok", "legal_compliance": "ok"}
-    assert body["dependencies"] == {"checkpoint_db": "ok", "auth": "configured", "router_key": "configured", "answer_cache": "off"}
+    assert body["dependencies"] == {"checkpoint_db": "ok", "auth": "configured", "router_key": "configured",
+                                    "anthropic_key": "configured", "answer_cache": "off"}
 
 
 def test_a_down_service_makes_only_its_department_unreachable_and_the_api_degraded_not_unready(client):
@@ -138,3 +141,13 @@ def test_a_missing_router_key_is_degraded(client, env):
     fake_services(lambda r: httpx.Response(200))
     r = client.get("/ready")
     assert r.status_code == 200 and r.json()["status"] == "degraded" and r.json()["dependencies"]["router_key"] == "not_configured"
+
+
+def test_a_missing_anthropic_key_is_degraded_and_never_reveals_the_value(client, env):
+    env.delenv("ANTHROPIC_API_KEY")
+    fake_services(lambda r: httpx.Response(200))
+    r = client.get("/ready")
+    assert r.status_code == 200 and r.json()["status"] == "degraded"
+    assert r.json()["dependencies"]["anthropic_key"] == "not_configured"
+    env.setenv("ANTHROPIC_API_KEY", "sk-ant-secret-value-xyz")
+    assert "sk-ant-secret-value-xyz" not in client.get("/ready").text

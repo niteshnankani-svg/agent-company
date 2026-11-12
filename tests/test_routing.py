@@ -112,7 +112,7 @@ def test_both_unsure_is_not_classified_but_any_outage_is_unavailable(monkeypatch
 
 
 # ------------------------------------------------------------------- llm_classify
-class FakeBedrock:
+class FakeAnthropic:
     def __init__(self, text=None, exc=None):
         self.text, self.exc, self.calls = text, exc, 0
         self.messages = self
@@ -126,16 +126,28 @@ class FakeBedrock:
 
 def test_llm_classify_outcomes(monkeypatch):
     def with_client(client):
-        monkeypatch.setattr(orchestrator, "get_bedrock_client", lambda: client)
+        monkeypatch.setattr(orchestrator, "get_anthropic_client", lambda: client)
 
-    with_client(FakeBedrock(" Legal_Compliance \n"))
+    with_client(FakeAnthropic(" Legal_Compliance \n"))
     assert orchestrator.llm_classify("t", 3) == ("legal_compliance", "ok", 2)
-    with_client(FakeBedrock("human_escalation"))
+    with_client(FakeAnthropic("human_escalation"))
     assert orchestrator.llm_classify("t", 3) == (None, "unsure", 2)
-    with_client(FakeBedrock("a long reply about nothing"))
+    with_client(FakeAnthropic("a long reply about nothing"))
     assert orchestrator.llm_classify("t", 3) == (None, "unsure", 2)
-    with_client(FakeBedrock(exc=RuntimeError("no credentials")))
+    with_client(FakeAnthropic(exc=RuntimeError("no credentials")))
     assert orchestrator.llm_classify("t", 3) == (None, "error", 2)  # a failed call still costs budget
-    spent = FakeBedrock("finance")
+    spent = FakeAnthropic("finance")
     with_client(spent)
     assert orchestrator.llm_classify("t", 0) == (None, "no_budget", 0) and spent.calls == 0
+
+
+def test_anthropic_client_is_created_on_first_use_with_bounded_timeout_and_retries(monkeypatch):
+    from clients import get_anthropic_client
+    get_anthropic_client.cache_clear()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-value-not-real")
+    monkeypatch.setenv("ANTHROPIC_TIMEOUT_SECONDS", "7")
+    monkeypatch.setenv("ANTHROPIC_MAX_RETRIES", "3")
+    c = get_anthropic_client()
+    assert c.max_retries == 3 and c.timeout == 7.0
+    assert c.base_url.host == "api.anthropic.com"  # the direct API, not a cloud provider
+    get_anthropic_client.cache_clear()

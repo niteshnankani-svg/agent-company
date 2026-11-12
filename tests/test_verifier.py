@@ -99,7 +99,7 @@ def test_the_model_is_asked_through_a_forced_tool_with_everything_fenced_as_data
     block = type("B", (), {"type": "tool_use", "input": good()})()
     client = FakeClient([block])
     monkeypatch.undo()
-    monkeypatch.setattr(verifier, "get_bedrock_client", lambda: client)
+    monkeypatch.setattr(verifier, "get_anthropic_client", lambda: client)
     out = verifier._call_checker("What is 357?", "It is about X.", "[src]\nevidence text")
     assert out == good()
     kw = client.kwargs

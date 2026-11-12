@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from clients import ROUTER_MODEL_ID, get_bedrock_client
+from clients import ROUTER_MODEL_ID, get_anthropic_client
 from contract import FieldKind, FieldSpec
 
 log = logging.getLogger(__name__)
@@ -165,7 +165,7 @@ def _tool(defs: list[FieldDef]) -> dict:
 
 
 def _call_model(text: str, defs: list[FieldDef]) -> dict:
-    response = get_bedrock_client().messages.create(
+    response = get_anthropic_client().messages.create(
         model=EXTRACTION_MODEL_ID,
         max_tokens=600,
         temperature=0,

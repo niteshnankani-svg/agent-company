@@ -1,3 +1,5 @@
+import os
+
 import joblib
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
@@ -52,5 +54,6 @@ model.fit(X_train, y_train)
 y_pred = model.predict(X_test)
 print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
 
+os.makedirs("models/finance", exist_ok=True)
 joblib.dump(model, "models/finance/ap_classifier.pkl")
 joblib.dump(label_encoder, "models/finance/ap_label_encoder.pkl")

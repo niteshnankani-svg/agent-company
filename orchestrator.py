@@ -3,7 +3,7 @@
 Order of attempts:
 1. Jev (TypeSafe), a Choice question over the five departments. Used only if its
    own confidence is at least ``ROUTER_MIN_CONFIDENCE`` (default 0.75).
-2. Claude Haiku on Bedrock, asked for exactly one department name. It may answer
+2. Claude Haiku on Anthropic's API, asked for exactly one department name. It may answer
    ``human_escalation`` if it cannot tell.
 3. Otherwise the request goes to the human-review node, with a reason that says
    whether the classifiers were *unsure* (``request_not_classified``) or
@@ -22,7 +22,7 @@ from typing import Optional
 
 from typesafe_sdk import Choice
 
-from clients import ROUTER_MODEL_ID, get_bedrock_client, get_typesafe_client
+from clients import ROUTER_MODEL_ID, get_anthropic_client, get_typesafe_client
 from state import GraphState, audit_entry
 
 log = logging.getLogger(__name__)
@@ -112,7 +112,7 @@ def llm_classify(text: str, budget: int) -> tuple[Optional[str], str, int]:
         return None, "no_budget", budget
     budget -= 1  # spent before the attempt: a failed call still counts
     try:
-        response = get_bedrock_client().messages.create(
+        response = get_anthropic_client().messages.create(
             model=ROUTER_MODEL_ID,
             max_tokens=20,
             system=ORCHESTRATOR_PROMPT,

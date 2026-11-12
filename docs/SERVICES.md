@@ -17,8 +17,8 @@ written to the server log and never returned.
 | Export (proposal) | `niryat_client.py` | `NIRYAT_CHAT_URL` | `NIRYAT_CHAT_TIMEOUT_SECONDS` (60) | server-sent events of `{chunk}`; an HS code is extracted from the prose |
 | Export (check) | `niryat_client.py` | `NIRYAT_TRADEDATA_URL` | `NIRYAT_TRADEDATA_TIMEOUT_SECONDS` (90) | `{data[], intel}`; `found` is added here |
 
-Finance has no external service. Routing, field extraction and verification use TypeSafe and AWS Bedrock
-(see `.env.example`).
+Finance has no external service. Routing, field extraction and verification use TypeSafe and
+Anthropic's API (`ANTHROPIC_API_KEY`; see `.env.example`).
 
 ## What each service does and does not give us
 

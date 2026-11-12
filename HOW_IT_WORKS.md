@@ -41,7 +41,7 @@ flowchart TD
 What each step is, in `graph.py` and the files it calls:
 
 - **orchestrator** (`orchestrator.py`): asks TypeSafe's Jev model which department; if it is not confident (below
-  `ROUTER_MIN_CONFIDENCE`, default 0.75) or fails, asks Claude Haiku on Bedrock. If neither can decide it says so, with a reason that tells
+  `ROUTER_MIN_CONFIDENCE`, default 0.75) or fails, asks Claude Haiku on Anthropic's API. If neither can decide it says so, with a reason that tells
   *unsure* (`request_not_classified`) from *unreachable* (`classifier_unavailable`). A request answering a form the system itself
   generated skips routing: the form says which department it came from.
 - **cache_lookup / cache_store** (`cache.py`): reuse of a verified answer. Off unless an embedding provider is configured. Only Legal may
@@ -143,24 +143,23 @@ storage, auth and each department's service.
 | 13 | A router outage crashed the request | Routing failure goes to a person with a clear reason. (D-018, D-019) |
 | 14 | 500s leaked exception text; no authentication | Incident ids; API keys with client and reviewer roles; fail closed. (D-054, D-055) |
 | 15 | No end-to-end time limit | Per-call timeouts and a per-department deadline. (D-050, D-052) |
-| 16 | Without Bedrock, ambiguous results looped and escalated | Replaced by an explicit policy: withheld by default, `VERIFIER_ON_UNAVAILABLE` to choose otherwise. (D-037) |
+| 16 | Without the Anthropic API, ambiguous results looped and escalated | Replaced by an explicit policy: withheld by default, `VERIFIER_ON_UNAVAILABLE` to choose otherwise. (D-037) |
 | 17 | Types did not match the data | One validated contract. |
 | 18 | Sequential mode: four departments, caller-picked | Legal is included; still caller-chosen and only the last step is verified. Not changed on purpose. (D-040) |
 | 19 | The UI let you pick a department | One text box. A browser test checks there is no way to pick. (D-024) |
-| 20 | Dead code and stale docs | Deleted: `complaint_agent.py`, `backend_model.py`, the old root test scripts, the stale routing doc, the demo page and old eval reports. **Left in place:** the `models/` pickles, the training scripts and the synthetic data. (Section 7) |
+| 20 | Dead code and stale docs | Deleted: `complaint_agent.py`, `backend_model.py`, the old root test scripts, the stale routing doc, the demo page and old eval reports. The `models/` pickles were deleted afterwards (D-063). The training scripts and synthetic data remain. (Section 7) |
 | 21 | Three different "backend" implementations | One. |
 | 22 | Machine-specific values committed | Local paths, a raw-IP endpoint, a tunnel URL and a dead CloudFront default removed. `.env.example` shows the public NiryatAI address as an example only. |
 | 23 | The "test suite" was scripts | A pytest suite, a CI workflow, and a live eval you run yourself. |
 
 ## 7. What is still not true, or not verified
 
-- **Nothing has run against your real services.** Not the Legal RAG, the HR agent, NiryatAI, the ticketing agent, TypeSafe, nor Bedrock. The tests mock all of them. The live eval (`evals/`) is how you
+- **Nothing has run against your real services.** Not the Legal RAG, the HR agent, NiryatAI, the ticketing agent, TypeSafe, nor Anthropic's API. The tests mock all of them. The live eval (`evals/`) is how you
   find out, and no eval has been run.
 - **The prompts for extraction and verification** follow the vendor's tool-use format and are tested against fakes. Whether the models judge claims well is untested.
 - **Legal answers will often go to a person at first**, because the service returns summaries rather than passage text (D-039).
 - **The HR agent's reply shape is assumed**; Backend returns no sources.
 - **The Docker image has never been built** by me (no daemon here). CI builds and starts it.
 - **The cache threshold (0.95) is a placeholder** until measured.
-- **Left in place deliberately:** `models/finance/*.pkl`, `train_ap_classifier.py`, `synthetic_data_generator.py`, `syntheic_data/`. The system does not use them. An earlier comment said an outside tool evaluates the pickles, and
-  pickles can run code when loaded, so check whether anything still needs them and delete them if not.
+- **The finance model pickles were deleted** after the merge (D-063). `train_ap_classifier.py` regenerates the AP ones; the two `credit_risk_*` files had no training script here and exist only in git history. The training scripts and synthetic data remain, unused by the running system.
 - **No rate limiting, no stored-run cleanup, no reviewer screen**, and the database holds sensitive data at rest.
