@@ -18,6 +18,22 @@ command -v node >/dev/null || { echo "Node 22+ is required" >&2; exit 1; }
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
   || { echo "Python 3.11 or newer is required" >&2; exit 1; }
 
+# --- Ports must be free before anything starts ----------------------------------------------
+port_busy() { python3 -c 'import socket,sys; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try: s.bind(("127.0.0.1", int(sys.argv[1])))
+except OSError: sys.exit(0)
+sys.exit(1)' "$1"; }
+if port_busy "$API_PORT"; then
+  echo "Port $API_PORT is already in use by another program. Use a different one, for example:  API_PORT=8081 ./scripts/run_local.sh" >&2
+  echo "(To see what is using it: lsof -i :$API_PORT)" >&2
+  exit 1
+fi
+if port_busy "$CONSOLE_PORT"; then
+  echo "Port $CONSOLE_PORT is already in use by another program. Use a different one, for example:  CONSOLE_PORT=3001 ./scripts/run_local.sh" >&2
+  echo "(To see what is using it: lsof -i :$CONSOLE_PORT)" >&2
+  exit 1
+fi
+
 # --- Python side ---------------------------------------------------------------------------
 [ -d .venv ] || python3 -m venv .venv
 STAMP=".venv/.requirements.sha"
@@ -64,7 +80,9 @@ trap cleanup INT TERM EXIT
 set -a; . ./.env; set +a
 .venv/bin/uvicorn api:app --host 127.0.0.1 --port "$API_PORT" &
 PIDS+=($!)
-(cd frontend && exec npm run dev -- --port "$CONSOLE_PORT") &
+# The console is pointed at the API port chosen here, whatever frontend/.env.local says (a variable already set in the
+# environment wins over .env.local), so changing API_PORT just works.
+(cd frontend && AGENT_COMPANY_API_URL="http://localhost:$API_PORT" exec npm run dev -- --port "$CONSOLE_PORT") &
 PIDS+=($!)
 
 echo
