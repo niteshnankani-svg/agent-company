@@ -1,0 +1,97 @@
+name: CI
+
+# No secrets are used anywhere in this workflow. Every external service is mocked in the test suite,
+# so a pull request from a fork runs exactly the same as one from this repository.
+# The live eval (evals/run_evals.py) is NOT run here: you run it yourself against a real deployment.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]   # 3.11 is what the Docker image uses
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agentco
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/agentco
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-postgres.txt
+            requirements-dev.txt
+      - name: Install runtime + test + Postgres dependencies
+        run: pip install -r requirements-dev.txt -r requirements-postgres.txt
+      - name: Test suite (no API keys, every external service mocked)
+        run: python -m pytest -q -rs -p no:cacheprovider 2>&1 | tee pytest.out
+      - name: The Postgres tests must have run, not been skipped
+        run: |
+          if grep -q "TEST_POSTGRES_URL not set" pytest.out; then
+            echo "Postgres tests were skipped; the service container was not reachable."; exit 1
+          fi
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - name: Install the browser the tests drive
+        run: npx playwright install --with-deps chromium
+      - name: Browser tests (against a mock of the Python API; no backend, no keys)
+        run: npm run test:e2e -- --trace off
+
+  docker:
+    name: Docker image builds and starts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t agent-company:ci .
+      - name: Start it as a container would run it, then check health, readiness and authentication
+        run: |
+          KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+          docker run -d --name api -p 8080:8080 -e "API_KEYS=ci:client:${KEY}" agent-company:ci
+          for i in $(seq 1 30); do curl -fs localhost:8080/health && break; sleep 2; done
+          curl -fs localhost:8080/health
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/ready)" != "000"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8080/request -H 'content-type: application/json' -d '{"request_id":"a","raw_input":"hi"}')" = "401"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8080/request -H "Authorization: Bearer ${KEY}" -H 'content-type: application/json' -d '{"request_id":"a","raw_input":"hi"}')" = "200"
+          docker logs api | tail -20

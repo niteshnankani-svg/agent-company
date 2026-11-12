@@ -1,157 +1,17 @@
+"""The LangGraph wiring. Every node returns a partial state update; none mutate state."""
 from langgraph.graph import END, StateGraph
+from langgraph.types import interrupt
 
-try:
-    from state import GraphState, log_audit, new_state
-    from orchestrator import orchestrator_node
-    from finance import finance_cache, finance_head_node, llm_escalate_finance
-    from verifier import register_department_cache, verifier_node
-except ModuleNotFoundError as exc:
-    if exc.name not in {"state", "orchestrator", "finance", "verifier", "cache"}:
-        raise
-    from .state import GraphState, log_audit, new_state
-    from .orchestrator import orchestrator_node
-    from .finance import finance_cache, finance_head_node, llm_escalate_finance
-    from .verifier import register_department_cache, verifier_node
+from cache import get_cache, why_not_cacheable
+from contract import DepartmentResult
+from departments import run_department
+from review import HumanDecision, apply_decision, has_draft, review_payload
+from orchestrator import orchestrator_node
+from state import GraphState, audit_entry, new_state, result_update
+from verifier import verifier_node
 
-
-MAX_RETRIES = 3
-
-register_department_cache("finance", finance_cache)
-
-
-def finance_node_wrapper(state: GraphState) -> GraphState:
-    if state["retry_count"] == 0:
-        return finance_head_node(
-            state, state["department_fields"], state["sub_department"]
-        )
-    prior_output = state["department_output"]
-    new_output = llm_escalate_finance(prior_output, state)
-    state["department_output"] = new_output
-    log_audit(
-        state,
-        "finance_head_retry_escalation",
-        new_output["decision"],
-        source=new_output["source"],
-    )
-    return state
-
-
-def orchestrator_entry_node(state: GraphState) -> GraphState:
-    """Keep the existing entry point while bypassing classification for a sequence.
-
-    ``orchestrator.py`` is intentionally left unchanged because it is a
-    protected department-independent component. This graph-level guard gives
-    explicit sequential requests the same behavior: no cache lookup, local
-    classification, or LLM call can overwrite their caller-supplied sequence.
-    """
-    if state.get("department_sequence"):
-        log_audit(state, "orchestrator", "sequential_request", source="local_model")
-        return state
-    return orchestrator_node(state)
-
-
-def sequence_step(state: GraphState) -> GraphState:
-    """Run the next explicitly requested department and preserve its output."""
-    if state.get("department_history") is None:
-        state["department_history"] = []
-
-    dept = state["department_sequence"].pop(0)
-    dept_config = (state.get("department_fields_by_dept") or {}).get(dept, {})
-    state["department_fields"] = dept_config.get("fields", {})
-
-    if dept == "finance":
-        try:
-            if __package__:
-                from .finance import finance_head_node
-            else:
-                from finance import finance_head_node
-        except ModuleNotFoundError as exc:
-            raise ImportError(
-                f"finance department unavailable in sequence: {exc}"
-            ) from exc
-        state = finance_head_node(
-            state,
-            dept_config.get("fields", {}),
-            dept_config.get("sub_department"),
-        )
-    elif dept == "hr_complaints":
-        try:
-            if __package__:
-                from .hr_complaints import hr_head_node
-            else:
-                from hr_complaints import hr_head_node
-        except ModuleNotFoundError as exc:
-            raise ImportError(f"hr_complaints unavailable in sequence: {exc}") from exc
-        state = hr_head_node(state)
-    elif dept == "backend_ticketing":
-        try:
-            if __package__:
-                from .backend_ticketing import backend_head_node
-            else:
-                from backend_ticketing import backend_head_node
-        except ModuleNotFoundError as exc:
-            raise ImportError(
-                f"backend_ticketing unavailable in sequence: {exc}"
-            ) from exc
-        state = backend_head_node(state)
-    elif dept == "export_compliance":
-        try:
-            if __package__:
-                from .export_compliance import export_head_node
-            else:
-                from export_compliance import export_head_node
-        except ModuleNotFoundError as exc:
-            raise ImportError(
-                f"export_compliance unavailable in sequence: {exc}"
-            ) from exc
-        state = export_head_node(state)
-    else:
-        state["department_output"] = {
-            "decision": "unsupported_department",
-            "confidence": 0.0,
-            "rationale": f"No department head exists for '{dept}' in sequence",
-            "evidence_ids": [],
-            "source": "local_model",
-        }
-
-    state["department_history"].append(
-        {"department": dept, "output": state["department_output"]}
-    )
-    return state
-
-
-def route_after_sequence_step(state: GraphState) -> str:
-    """Continue until the final department, then verify only its output.
-
-    Earlier outputs remain in department_history for audit purposes but are
-    not separately re-verified. Verifying every intermediate step is a
-    deliberate future extension, not part of this build because no real
-    scenario has required it yet.
-    """
-    if state.get("department_sequence"):
-        return "continue"
-    return "done"
-
-
-def route_after_orchestrator(state: GraphState) -> str:
-    if state.get("department_sequence"):
-        return "sequence_step"
-    if state["request_type"] == "finance":
-        return "finance_head"
-    if state["request_type"] == "hr_complaints":
-        return "hr_head"
-    if state["request_type"] == "backend_ticketing":
-        return "backend_head"
-    if state["request_type"] == "export_compliance":
-        return "export_head"
-    if state["request_type"] == "legal_compliance":
-        return "legal_head"
-    return "unsupported_department"
-
-
-# A failed verification must retry the department that produced the output —
-# not always finance. Every department head sets state["active_department"].
-_RETRY_TARGETS = {
+# department name -> graph node name
+HEAD_NODES = {
     "finance": "finance_head",
     "hr_complaints": "hr_head",
     "backend_ticketing": "backend_head",
@@ -160,143 +20,248 @@ _RETRY_TARGETS = {
 }
 
 
-def route_after_verifier(state: GraphState) -> str:
-    if state["verifier_result"] == "pass":
-        return "done"
-    # THIS is where the retry cap is actually enforced — verifier_node only
-    # sets verifier_result and increments retry_count; it does not decide what
-    # happens next. That decision belongs here, in the graph, not inside any
-    # individual node.
-    if state["retry_count"] >= MAX_RETRIES:
-        return "human_escalation"
-    # Unknown/unset active_department fails closed to human review rather than
-    # silently retrying the wrong department.
-    return _RETRY_TARGETS.get(state.get("active_department"), "human_escalation")
+def make_head_node(department: str):
+    node_name = HEAD_NODES[department]
+
+    def head_node(state: GraphState) -> dict:
+        result = run_department(
+            department,
+            state["raw_input"],
+            state.get("department_fields"),
+            state.get("sub_department"),
+            bool(state.get("follow_up")),
+            state.get("feedback"),
+        )
+        return result_update(state, node_name, result)
+
+    head_node.__name__ = node_name
+    return head_node
 
 
-def unsupported_department_node(state: GraphState) -> GraphState:
-    state["department_output"] = {
-        "decision": "unsupported_department",
-        "confidence": 0.0,
-        "rationale": f"No department head exists yet for '{state['request_type']}'",
-        "evidence_ids": [],
-        "source": "local_model",
-    }
-    return state
+def orchestrator_entry_node(state: GraphState) -> dict:
+    """Skip classification for a sequence, or for a follow-up form the system generated itself."""
+    if state.get("department_sequence"):
+        return {
+            "audit_trail": [audit_entry(state, "orchestrator", "sequential_request")]
+        }
+    pinned = state.get("pinned_department")
+    if pinned in HEAD_NODES:
+        return {
+            "request_type": pinned,
+            "audit_trail": [
+                audit_entry(state, "orchestrator", "routed", department=pinned, source="follow_up")
+            ],
+        }
+    return orchestrator_node(state)
 
 
-def human_escalation_node(state: GraphState) -> GraphState:
-    """Does NOT overwrite department_output — the last real decision and its
-    evidence_ids are what a human reviewer needs, not a generic message that
-    discards them.
-    """
-    state["escalation_reason"] = (
-        f"Verifier failed {MAX_RETRIES} times — routed to human review. "
-        "Last attempted decision shown was NOT verified."
+def sequence_step(state: GraphState) -> dict:
+    """Run the next department of an explicitly requested sequence."""
+    remaining = list(state["department_sequence"])
+    department = remaining.pop(0)
+    config = (state.get("department_fields_by_dept") or {}).get(department, {})
+    fields = config.get("fields", {})
+    result = run_department(
+        department, state["raw_input"], fields, config.get("sub_department")
     )
-    return state
+    update = result_update(state, "sequence_step", result)
+    update.update(
+        {
+            "department_sequence": remaining,
+            "department_fields": fields,
+            "department_history": [
+                {"department": department, "result": result.to_state()}
+            ],
+        }
+    )
+    return update
 
 
-def build_graph():
-    try:
-        if __package__:
-            from .hr_complaints import hr_cache, hr_head_node
+def route_after_sequence_step(state: GraphState) -> str:
+    """Continue until the last department; only its result is verified."""
+    return "continue" if state.get("department_sequence") else "done"
+
+
+def route_after_orchestrator(state: GraphState) -> str:
+    if state.get("department_sequence"):
+        return "sequence_step"
+    if state["request_type"] in HEAD_NODES:
+        return "cache_lookup"
+    # "human_escalation" (the router could not decide or was unreachable) and any
+    # unexpected value both go to a person, explicitly, by name.
+    return "queue_review"
+
+
+def cache_key(department: str, state: GraphState) -> tuple[str, str]:
+    """(text, scope) the cache is keyed on: the text the department actually answers."""
+    fields = state.get("department_fields") or {}
+    if department == "legal_compliance":
+        return fields.get("question") or state["raw_input"], str(fields.get("act_filter") or "")
+    return state["raw_input"], ""
+
+
+def cache_lookup_node(state: GraphState) -> dict:
+    """Before running a department: reuse a stored, verified answer if policy allows."""
+    department = state["request_type"]
+    text, scope = cache_key(department, state)
+    skip = why_not_cacheable(department, text)
+    if skip:
+        return {"audit_trail": [audit_entry(state, "cache_lookup", "skipped", reason=skip)]}
+    cache, note = get_cache()
+    if cache is None:
+        return {"audit_trail": [audit_entry(state, "cache_lookup", "disabled", reason=note)]}
+    hit = cache.lookup(department, text, scope)
+    if hit is None:
+        return {"audit_trail": [audit_entry(state, "cache_lookup", "miss")]}
+    result = DepartmentResult.from_state(hit.result)
+    update = result_update(state, "cache_lookup", result)
+    update["audit_trail"] = [
+        audit_entry(
+            state, "cache_lookup", "hit", department=department,
+            similarity=round(hit.similarity, 4), age_seconds=round(hit.age_seconds),
+        )
+    ]
+    update["cache_hit"] = True
+    # Only verified answers are ever stored, so a hit was verified when it was stored.
+    update["verification"] = {"status": "verified", "check": "cached"}
+    return update
+
+
+def route_after_cache(state: GraphState) -> str:
+    return "done" if state.get("cache_hit") else HEAD_NODES[state["request_type"]]
+
+
+def cache_store_node(state: GraphState) -> dict:
+    """After the verifier passed a result: remember it if policy allows. Never before verification."""
+    department = state.get("active_department") or ""
+    if state.get("department_history"):
+        return {"audit_trail": [audit_entry(state, "cache_store", "skipped", reason="sequential run")]}
+    raw = state.get("department_result")
+    if not raw:
+        return {"audit_trail": [audit_entry(state, "cache_store", "skipped", reason="no result")]}
+    result = DepartmentResult.from_state(raw)
+    text, scope = cache_key(department, state)
+    reason = why_not_cacheable(department, text, result)
+    if reason is None and (state.get("verification") or {}).get("status") != "verified":
+        reason = "only verified answers are cached"
+    if reason is None:
+        cache, note = get_cache()
+        if cache is None:
+            reason = note
         else:
-            from hr_complaints import hr_cache, hr_head_node
-    except ModuleNotFoundError as exc:
-        raise ImportError(
-            "HR department unavailable — hr_complaints.py could not import "
-            "its dependencies (likely missing complaint_agent.py or "
-            f"crewai/torch/transformers): {exc}"
-        ) from exc
+            reason = cache.store(department, text, result, scope)
+    status = "stored" if reason is None else "not_cached"
+    return {"audit_trail": [audit_entry(state, "cache_store", status, reason=reason)]}
 
-    try:
-        if __package__:
-            from .backend_ticketing import backend_head_node
+
+def route_after_verifier(state: GraphState) -> str:
+    """pass -> remember it (or queue it for a person); retry -> the same department with feedback; fail -> a person.
+
+    On "fail" the verifier has already withdrawn the answer (it is ``needs_human`` by now). A result a
+    department itself marked ``needs_human`` also goes to a person: that is the whole point of the status.
+    """
+    outcome = state["verifier_result"]
+    if outcome == "pass":
+        held = state.get("department_result") or {}
+        return "queue_review" if held.get("status") == "needs_human" else "cache_store"
+    if outcome == "retry":
+        # Unknown/unset active_department fails closed to human review.
+        return HEAD_NODES.get(state.get("active_department"), "queue_review")
+    return "queue_review"
+
+
+def make_queue_review_node(reviews):
+    """Put a run that needs a person into the review inbox, and make sure its held result is in state."""
+
+    def queue_review_node(state: GraphState, config) -> dict:
+        raw = state.get("department_result")
+        update: dict = {}
+        if raw:
+            held = DepartmentResult.from_state(raw)
         else:
-            from backend_ticketing import backend_head_node
-    except ModuleNotFoundError as exc:
-        raise ImportError(
-            "Backend/Ticketing unavailable — backend_ticketing.py could not "
-            "import its dependencies (likely missing the mcp package): "
-            f"{exc}"
-        ) from exc
+            held = DepartmentResult(
+                department=state.get("active_department") or "orchestrator",
+                status="needs_human",
+                reason=state.get("escalation_reason") or "unspecified",
+            )
+            update["department_result"] = held.to_state()
+            update["active_department"] = held.department
+        reason = state.get("escalation_reason") or held.reason or "unspecified"
+        update["escalation_reason"] = reason
+        update["audit_trail"] = [audit_entry(state, "queue_review", "awaiting_review", reason=reason, department=held.department)]
+        if reviews is not None:
+            reviews.add(
+                config["configurable"]["thread_id"], state["request_id"], held.department,
+                reason, state["raw_input"], has_draft(held),
+            )
+        return update
 
-    try:
-        if __package__:
-            from .export_compliance import export_head_node
-        else:
-            from export_compliance import export_head_node
-    except ModuleNotFoundError as exc:
-        raise ImportError(
-            "Export/Compliance unavailable — export_compliance.py could "
-            "not import its dependencies (likely missing mcp/httpx): "
-            f"{exc}"
-        ) from exc
+    return queue_review_node
 
-    try:
-        if __package__:
-            from .legal_compliance import legal_head_node
-        else:
-            from legal_compliance import legal_head_node
-    except ModuleNotFoundError as exc:
-        raise ImportError(
-            "Legal unavailable — legal_compliance.py could not import "
-            f"dependencies: {exc}"
-        ) from exc
 
-    register_department_cache("hr_complaints", hr_cache)
+def human_review_node(state: GraphState, config) -> dict:
+    """Pause the run until a person decides. The run is checkpointed here and can resume later,
+    on another worker, even after a restart. Whatever the person decides becomes the final result."""
+    held = DepartmentResult.from_state(state["department_result"])
+    raw = interrupt(review_payload(config["configurable"]["thread_id"], held, state["raw_input"]))
+    decision = HumanDecision.model_validate(raw)
+    final, verification = apply_decision(held, decision)
+    return {
+        "department_result": final.to_state(),
+        "verification": verification,
+        "audit_trail": [
+            audit_entry(state, "human_review", "resolved", decision=decision.action, reviewer=decision.reviewer)
+        ],
+    }
+
+
+def build_graph(checkpointer=None, reviews=None):
     graph = StateGraph(GraphState)
     graph.add_node("orchestrator", orchestrator_entry_node)
     graph.add_node("sequence_step", sequence_step)
-    graph.add_node("finance_head", finance_node_wrapper)
-    graph.add_node("hr_head", hr_head_node)
-    graph.add_node("backend_head", backend_head_node)
-    graph.add_node("export_head", export_head_node)
-    graph.add_node("legal_head", legal_head_node)
+    graph.add_node("cache_lookup", cache_lookup_node)
+    for department, node_name in HEAD_NODES.items():
+        graph.add_node(node_name, make_head_node(department))
     graph.add_node("verifier", verifier_node)
-    graph.add_node("unsupported_department", unsupported_department_node)
-    graph.add_node("human_escalation", human_escalation_node)
+    graph.add_node("cache_store", cache_store_node)
+    graph.add_node("queue_review", make_queue_review_node(reviews))
+    graph.add_node("human_review", human_review_node)
+
     graph.set_entry_point("orchestrator")
     graph.add_conditional_edges(
         "orchestrator",
         route_after_orchestrator,
         {
             "sequence_step": "sequence_step",
-            "finance_head": "finance_head",
-            "hr_head": "hr_head",
-            "backend_head": "backend_head",
-            "export_head": "export_head",
-            "legal_head": "legal_head",
-            "unsupported_department": "unsupported_department",
+            "cache_lookup": "cache_lookup",
+            "queue_review": "queue_review",
         },
+    )
+    graph.add_conditional_edges(
+        "cache_lookup",
+        route_after_cache,
+        {"done": END, **{node: node for node in HEAD_NODES.values()}},
     )
     graph.add_conditional_edges(
         "sequence_step",
         route_after_sequence_step,
         {"continue": "sequence_step", "done": "verifier"},
     )
-    graph.add_edge("finance_head", "verifier")
-    graph.add_edge("hr_head", "verifier")
-    graph.add_edge("backend_head", "verifier")
-    graph.add_edge("export_head", "verifier")
-    graph.add_edge("legal_head", "verifier")
+    for node_name in HEAD_NODES.values():
+        graph.add_edge(node_name, "verifier")
     graph.add_conditional_edges(
         "verifier",
         route_after_verifier,
         {
-            "done": END,
-            "finance_head": "finance_head",
-            "hr_head": "hr_head",
-            "backend_head": "backend_head",
-            "export_head": "export_head",
-            "legal_head": "legal_head",
-            "human_escalation": "human_escalation",
+            "cache_store": "cache_store",
+            **{node: node for node in HEAD_NODES.values()},
+            "queue_review": "queue_review",
         },
     )
-    graph.add_edge("unsupported_department", END)
-    graph.add_edge("human_escalation", END)
-    return graph.compile()
+    graph.add_edge("cache_store", END)
+    graph.add_edge("queue_review", "human_review")
+    graph.add_edge("human_review", END)
+    return graph.compile(checkpointer=checkpointer)
 
 
 def build_initial_state(

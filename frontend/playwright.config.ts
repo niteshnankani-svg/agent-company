@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
+const MOCK_PORT = 8099;
 
 export default defineConfig({
   testDir: "./tests",
@@ -18,13 +19,30 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        // Optional: use an already-installed Chromium instead of the one Playwright downloads.
+        launchOptions: { executablePath: process.env.PW_CHROMIUM_PATH || undefined },
+      },
     },
   ],
-  webServer: {
-    command: "npm run dev",
-    url: `http://localhost:${PORT}`,
-    reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
-  },
+  webServer: [
+    {
+      // A mock of the Python API, so these tests need no backend and no keys.
+      command: "node tests/mock-api.mjs",
+      url: `http://127.0.0.1:${MOCK_PORT}/health`,
+      reuseExistingServer: !process.env.CI,
+      env: { MOCK_API_KEY: "test-console-key-0123456789abcdef" },
+    },
+    {
+      command: "npm run dev",
+      url: `http://localhost:${PORT}`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 90_000,
+      env: {
+        AGENT_COMPANY_API_URL: `http://127.0.0.1:${MOCK_PORT}`,
+        AGENT_COMPANY_API_KEY: "test-console-key-0123456789abcdef",
+      },
+    },
+  ],
 });

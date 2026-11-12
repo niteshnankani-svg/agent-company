@@ -1,25 +1,18 @@
-# Core: orchestrator, Finance, Export, Backend departments
+# Runtime dependencies of the Agent Company API (what `uvicorn api:app` imports).
+# Bounds are the versions this project was tested with, capped at the next major version.
 
-langgraph
-anthropic[bedrock]
+langgraph>=1.2,<2
+langgraph-checkpoint-sqlite>=3,<4
+pydantic>=2.8,<3
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+httpx>=0.27,<1
+numpy>=1.26,<3
+anthropic[bedrock]>=2,<3
+boto3>=1.34,<2
 typesafe-sdk==0.7.2
-xgboost
-scikit-learn
-pandas
-numpy
-joblib
-faker
-httpx
-# niryat_mcp.py / legal_rag_mcp.py use the FastMCP v1 API (mcp 2.x renamed
-# it to MCPServer with a different interface).
-mcp<2
 
-# HR/Complaints: Jev (complaint vs. general-question gate) + hr-agent
-# (Text-to-SQL/RAG over employee data, github.com/.../hr-agent). No local
-# BERT model or CrewAI needed - the prior complaint_agent.py pipeline
-# (transformers/torch/crewai) is retired; see git history if reviving it.
-
-# API layer (needed for deployment)
-
-fastapi
-uvicorn
+# Optional extras, deliberately not listed here:
+#   Postgres checkpoints (CHECKPOINT_DB_URL)  -> requirements-postgres.txt
+#   Local embeddings (EMBEDDING_PROVIDER=local) -> sentence-transformers (large, pulls in torch)
+#   Offline model training scripts             -> requirements-train.txt

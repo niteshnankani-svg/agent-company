@@ -4,15 +4,14 @@ import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import type { AuditTrailEntry } from "@/lib/types";
 import { buildTrace, nodeDisplayName } from "@/lib/trace";
-import { sourceMeta } from "@/lib/accents";
-import SourceBadge from "./SourceBadge";
+import { statusMeta } from "@/lib/accents";
 
 const TICK_MS = 550;
 const NODE_W = 176;
 const NODE_H = 60;
 const COL_GAP = 208;
 const ROW_Y = 118;
-const PAD_X = 70;
+const PAD_X = 100; // at least NODE_W / 2, so the first node is not clipped
 
 function nodeCenter(order: number) {
   return { x: PAD_X + order * COL_GAP, y: ROW_Y };
@@ -94,7 +93,7 @@ export default function TraceGraph({ trail }: { trail: AuditTrailEntry[] }) {
               if (i >= visibleCount || step.fromNodeOrder === null) return null;
               const from = nodeCenter(step.fromNodeOrder);
               const to = nodeCenter(step.toNodeOrder);
-              const meta = sourceMeta(step.entry.source);
+              const meta = statusMeta(step.entry.status);
 
               if (step.isLoopBack) {
                 const arc = 46 + (step.loopDepth % 3) * 22;
@@ -154,8 +153,8 @@ export default function TraceGraph({ trail }: { trail: AuditTrailEntry[] }) {
                   marginLeft: -4,
                   marginTop: -4,
                   borderRadius: "50%",
-                  background: sourceMeta(currentStep.entry.source).color,
-                  boxShadow: `0 0 10px 2px ${sourceMeta(currentStep.entry.source).color}`,
+                  background: statusMeta(currentStep.entry.status).color,
+                  boxShadow: `0 0 10px 2px ${statusMeta(currentStep.entry.status).color}`,
                   zIndex: 5,
                 }}
               />
@@ -170,7 +169,7 @@ export default function TraceGraph({ trail }: { trail: AuditTrailEntry[] }) {
               .reverse()
               .find((s) => s.entry.node === node.id)?.entry;
             const isCurrent = currentStep?.entry.node === node.id && currentStep.index === visibleCount - 1;
-            const meta = lastEntry ? sourceMeta(lastEntry.source) : null;
+            const meta = lastEntry ? statusMeta(lastEntry.status) : null;
             const color = meta?.color ?? "var(--border-hairline-strong)";
 
             return (
@@ -203,7 +202,7 @@ export default function TraceGraph({ trail }: { trail: AuditTrailEntry[] }) {
                   </span>
                   {revealed && lastEntry && (
                     <span className="mt-0.5 truncate max-w-full font-mono text-[9px]" style={{ color }}>
-                      {lastEntry.decision}
+                      {lastEntry.status.replaceAll("_", " ")}
                     </span>
                   )}
                 </motion.div>
@@ -217,7 +216,13 @@ export default function TraceGraph({ trail }: { trail: AuditTrailEntry[] }) {
                       className="absolute left-1/2 z-10 -translate-x-1/2"
                       style={{ top: -34, whiteSpace: "nowrap" }}
                     >
-                      <SourceBadge source={lastEntry.source} size="sm" />
+                      <span
+                        className="rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider"
+                        style={{ borderColor: color, color, background: `color-mix(in srgb, ${color} 10%, transparent)` }}
+                        title={lastEntry.reason ?? statusMeta(lastEntry.status).description}
+                      >
+                        {statusMeta(lastEntry.status).label}
+                      </span>
                     </motion.div>
                   )}
                 </AnimatePresence>

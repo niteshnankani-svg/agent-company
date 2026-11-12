@@ -1,54 +1,34 @@
-"""HR department: Jev gates complaints from general HR/employee questions.
+"""HR department.
 
-A specific complaint or grievance (harassment, workplace conflict,
-discrimination, bullying) always goes to human review - this system does not
-attempt to resolve those. A general informational question about employee
-data (headcounts, department stats, etc.) is answered by the local HR agent
-(via hr_agent_mcp.py -> hr-agent/query_server.py -> hr_agent.py's Text-to-SQL
-+ RAG over employee data, running through Ollama on this machine).
+Two jobs, in this order:
+
+1. **Complaint gate.** TypeSafe's Jev model is asked whether the text is a specific
+   employee complaint or grievance. If so, the request is ``needs_human``. This
+   system never tries to resolve complaints.
+2. **Informational questions.** Anything else is sent to the HR agent (a separate
+   Text-to-SQL + RAG service over employee data). The agent's answer is returned
+   with the evidence the agent supplied. If the agent supplies no evidence the
+   result is ``needs_human``: an HR answer nobody can check is not released.
+
+Confidence is ``none`` everywhere here. Jev's complaint probability is a routing
+signal, not a measure of whether an answer is right, so it is recorded as
+evidence and never presented as confidence.
 """
 import asyncio
+from typing import Any, Optional
 
-from typesafe_sdk import Noul, TypeSafeClient
+from typesafe_sdk import Noul
 
-try:
-    from cache import DepartmentCache
-    from state import DepartmentOutput, GraphState, log_audit
-    from hr_agent_mcp import ask_hr_agent
-except ImportError:
-    from .cache import DepartmentCache
-    from .state import DepartmentOutput, GraphState, log_audit
-    from .hr_agent_mcp import ask_hr_agent
+from clients import get_typesafe_client
+from contract import DepartmentResult, Evidence, service_error, with_feedback
+from hr_client import ask_hr_agent
 
-hr_cache = DepartmentCache(department="hr_complaints", similarity_threshold=0.92)
-typesafe_client = TypeSafeClient()
+DEPARTMENT = "hr_complaints"
+COMPLAINT_THRESHOLD = 0.5
 
 
-def _human_escalation_output(rationale: str, confidence: float, evidence_ids: list[str]) -> DepartmentOutput:
-    # state.DepartmentOutput predates this department and does not include the
-    # human_escalation source literal; the runtime contract requires this safe
-    # source for a failed or gated path.
-    return {
-        "decision": "human_escalation",
-        "confidence": confidence,
-        "rationale": rationale,
-        "evidence_ids": evidence_ids,
-        "source": "human_escalation",  # type: ignore[typeddict-item]
-    }
-
-
-def hr_head_node(state: GraphState) -> GraphState:
-    department_fields = state.get("department_fields") or {}
-    text = department_fields.get("complaint_text") or state["raw_input"]
-
-    cached = hr_cache.get(state["raw_input"])
-    if cached:
-        state["department_output"] = cached
-        state["active_department"] = "hr_complaints"
-        log_audit(state, "hr_head", cached["decision"], source="cache")
-        return state
-
-    response = typesafe_client.system_one(
+def complaint_probability(text: str) -> float:
+    response = get_typesafe_client().system_one(
         state=text,
         questions={
             "is_complaint": Noul(
@@ -62,40 +42,68 @@ def hr_head_node(state: GraphState) -> GraphState:
             ),
         },
     )
-    complaint_probability = response.nouls["is_complaint"].noul
+    return response.nouls["is_complaint"].noul
 
-    if complaint_probability >= 0.5:
-        output = _human_escalation_output(
-            "Jev classified this as an employee complaint or grievance "
-            "requiring human review.",
-            complaint_probability,
-            ["jev_complaint_gate"],
+
+def _evidence_from_agent(raw: Any) -> list[Evidence]:
+    """Normalise whatever evidence shape the HR agent returned into Evidence items."""
+    source = "hr_agent:sql_rag"
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        return [Evidence(source=source, text=raw)] if raw.strip() else []
+    if isinstance(raw, dict):
+        return [Evidence(source=source, data=raw)]
+    if isinstance(raw, list):
+        return [ev for item in raw for ev in _evidence_from_agent(item)]
+    return [Evidence(source=source, text=str(raw))]
+
+
+def run_hr(raw_input: str, fields: Optional[dict], feedback: Optional[str] = None) -> DepartmentResult:
+    text = (fields or {}).get("complaint_text") or raw_input
+
+    try:
+        p = complaint_probability(text)
+    except Exception as exc:  # the gate is a network call; a failure is a result, not a crash
+        return DepartmentResult(
+            department=DEPARTMENT,
+            status="failed",
+            error=f"complaint_gate_unavailable: {type(exc).__name__}",
         )
-        state["department_output"] = output
-        state["active_department"] = "hr_complaints"
-        log_audit(state, "hr_head", output["decision"], source="human_escalation")
-        return state
 
-    result = asyncio.run(ask_hr_agent(text))
+    if p >= COMPLAINT_THRESHOLD:
+        return DepartmentResult(
+            department=DEPARTMENT,
+            status="needs_human",
+            reason="employee_complaint",
+            evidence=[
+                Evidence(
+                    source="jev_complaint_gate",
+                    data={"complaint_probability": p, "threshold": COMPLAINT_THRESHOLD},
+                )
+            ],
+        )
 
+    # The complaint gate above saw the original text only; feedback goes to the HR agent alone.
+    result = asyncio.run(ask_hr_agent(with_feedback(text, feedback)))
     if "error" in result:
-        output = _human_escalation_output(
-            f"HR agent was unreachable or returned an error: "
-            f"{result.get('detail', result['error'])}",
-            0.0,
-            [],
+        return DepartmentResult(
+            department=DEPARTMENT,
+            status="failed",
+            error=service_error("hr_agent", result),
         )
-    else:
-        output: DepartmentOutput = {
-            "decision": "answered",
-            "confidence": 1.0 - complaint_probability,
-            "rationale": result.get("answer", ""),
-            "evidence_ids": ["hr_agent_text2sql_rag"],
-            "source": "llm",
-        }
 
-    state["department_output"] = output
-    state["active_department"] = "hr_complaints"
-    log_audit(state, "hr_head", output["decision"], source=output["source"])
-    # Never write to cache directly - only the verifier does, on pass.
-    return state
+    answer = result.get("answer") or ""
+    evidence = _evidence_from_agent(result.get("evidence"))
+    if not answer.strip():
+        return DepartmentResult(
+            department=DEPARTMENT, status="failed", error="hr_agent: empty answer"
+        )
+    if not evidence:
+        return DepartmentResult(
+            department=DEPARTMENT,
+            status="needs_human",
+            reason="hr_agent_returned_no_evidence",
+            answer=answer,
+        )
+    return DepartmentResult(department=DEPARTMENT, status="answered", answer=answer, evidence=evidence)

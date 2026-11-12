@@ -1,237 +1,104 @@
 #!/usr/bin/env python3
-"""Run the eval suite: POST every case in cases.py to the live agent_company
-backend, optionally judge each result with an LLM, and write evals.md.
+"""Run the eval cases against a live Agent Company API and write a report. YOU run this; CI does not.
 
-Judge is picked by whichever env var is set (checked in this order):
-  GEMINI_API_KEY   -> Gemini (model: $GEMINI_MODEL, default gemini-2.5-flash)
-  XAI_API_KEY / GROK_API_KEY -> Grok (model: $GROK_MODEL, default grok-4)
+    python evals/run_evals.py --api-url https://your-api.example --api-key "$EVAL_API_KEY"
+    python evals/run_evals.py --dry-run                 # list the cases and the coverage matrix, call nothing
+    python evals/run_evals.py --only hr-headcount-answered,legal-section-357-answered
 
-Neither is required to run this: without a key, evals.md still gets the
-real transcript (routing, decision, confidence, rationale, full audit_trail)
-for every case - just without a judge verdict. Never fabricates a verdict
-in place of a missing key.
+Cases marked ``break`` check the failed paths: the runner starts a local copy of the API (from this repo, using
+your environment for the real routing and model keys) with just those service addresses pointed at nothing, so
+"a service is down" is observed rather than assumed. Use --skip-failure-cases to leave them out.
 
-Usage: python3 evals/run_evals.py [--backend-url http://localhost:8080]
+Needs: the API reachable, a client or reviewer key (EVAL_API_KEY) unless auth is disabled there, and the same
+environment as the API for the failure cases. Optional: GEMINI_API_KEY or XAI_API_KEY/GROK_API_KEY for the judge.
+Exit status is 0 only if every scored case passed and none failed to run.
 """
 import argparse
-import json
 import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import httpx
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cases import CASES
 
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
-GROK_MODEL = os.environ.get("GROK_MODEL", "grok-4")
+import httpx  # noqa: E402
 
-JUDGE_PROMPT_TEMPLATE = """You are grading one response from a multi-department support-ticket router.
-
-TICKET SENT: {raw_input}
-
-WHAT THIS CASE IS TESTING: {notes}
-
-EXPECTED DEPARTMENT: {expected_department}
-EXPECTED RESOLUTION: {expected_resolution}
-GROUND TRUTH (if any, independent of the system's own explanation): {ground_truth}
-
-ACTUAL SYSTEM RESPONSE (raw JSON):
-{actual_response}
-
-Grade this response. Respond with ONLY a JSON object, no other text, with these exact keys:
-{{
-  "routing_correct": true/false/null (null if there's no single correct department for this case),
-  "resolution_appropriate": true/false (did it correctly resolve vs. escalate, given the expectation and ground truth?),
-  "answer_grounded": true/false/null (null if escalated - no answer to judge; for resolved cases, does the answer match ground truth / avoid fabrication?),
-  "score_1_to_5": integer (overall quality: 1=badly wrong or fabricated, 3=acceptable but flawed, 5=correct and well-grounded),
-  "reasoning": "2-3 sentences explaining the score, specifically calling out any fabrication, wrong routing, or inappropriate escalation decision"
-}}"""
+from cases import CASES  # noqa: E402
+from harness import Api, FailureServers, coverage_gaps, render_report, run_case  # noqa: E402
+from judge import judge_case, pick_judge  # noqa: E402
 
 
-def call_backend(client: httpx.Client, backend_url: str, raw_input: str) -> dict:
-    try:
-        response = client.post(
-            f"{backend_url}/request",
-            json={"request_id": "eval-" + os.urandom(4).hex(), "raw_input": raw_input},
-            timeout=280.0,
-        )
-        response.raise_for_status()
-        return {"ok": True, "response": response.json()}
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Run the Agent Company eval cases.")
+    parser.add_argument("--api-url", default=os.environ.get("AGENT_COMPANY_API_URL", "http://localhost:8080"))
+    parser.add_argument("--api-key", default=os.environ.get("EVAL_API_KEY"))
+    parser.add_argument("--out", help="report path (default: evals/results/<timestamp>.md)")
+    parser.add_argument("--only", help="comma-separated case ids")
+    parser.add_argument("--dry-run", action="store_true", help="show the cases and coverage; call nothing")
+    parser.add_argument("--skip-failure-cases", action="store_true", help="do not start local servers for the 'service down' cases")
+    parser.add_argument("--no-judge", action="store_true")
+    parser.add_argument("--timeout", type=float, default=120.0)
+    args = parser.parse_args(argv)
 
+    cases = CASES
+    if args.only:
+        wanted = {i.strip() for i in args.only.split(",")}
+        unknown = wanted - {c["id"] for c in CASES}
+        if unknown:
+            print(f"unknown case id(s): {', '.join(sorted(unknown))}", file=sys.stderr)
+            return 2
+        cases = [c for c in CASES if c["id"] in wanted]
+    if args.skip_failure_cases:
+        cases = [c for c in cases if not c.get("break")]
 
-def pick_judge():
-    if os.environ.get("GEMINI_API_KEY"):
-        return "gemini"
-    if os.environ.get("XAI_API_KEY") or os.environ.get("GROK_API_KEY"):
-        return "grok"
-    return None
+    gaps = coverage_gaps(CASES)
+    if gaps:
+        print("COVERAGE GAPS (no case for these department/status pairs): " + ", ".join(f"{d}/{s}" for d, s in gaps), file=sys.stderr)
 
+    if args.dry_run:
+        print(f"{len(cases)} case(s):")
+        for c in cases:
+            extra = f"  [breaks {', '.join(c['break'])}]" if c.get("break") else ""
+            print(f"  {c['id']:<40} {str(c.get('department')):<18} {str(c.get('status')):<16}{extra}")
+        from harness import matrix_rows
+        print("\n" + "\n".join(matrix_rows([])))
+        return 1 if gaps else 0
 
-def call_judge_gemini(client: httpx.Client, prompt: str) -> dict:
-    api_key = os.environ["GEMINI_API_KEY"]
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={api_key}"
-    response = client.post(
-        url,
-        json={"contents": [{"parts": [{"text": prompt}]}]},
-        timeout=60.0,
-    )
-    response.raise_for_status()
-    data = response.json()
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    return _parse_judge_json(text)
-
-
-def call_judge_grok(client: httpx.Client, prompt: str) -> dict:
-    api_key = os.environ.get("XAI_API_KEY") or os.environ["GROK_API_KEY"]
-    response = client.post(
-        "https://api.x.ai/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
-            "model": GROK_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0,
-        },
-        timeout=60.0,
-    )
-    response.raise_for_status()
-    data = response.json()
-    text = data["choices"][0]["message"]["content"]
-    return _parse_judge_json(text)
-
-
-def _parse_judge_json(text: str) -> dict:
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-    return json.loads(text.strip())
-
-
-def call_judge(judge: str, client: httpx.Client, prompt: str) -> dict:
-    try:
-        if judge == "gemini":
-            return {"ok": True, "verdict": call_judge_gemini(client, prompt)}
-        if judge == "grok":
-            return {"ok": True, "verdict": call_judge_grok(client, prompt)}
-        raise ValueError(f"unknown judge {judge}")
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}
-
-
-def run(backend_url: str) -> list[dict]:
+    judge = None if args.no_judge else pick_judge()
+    live = Api(args.api_url, args.api_key, args.timeout)
     results = []
-    judge = pick_judge()
-    with httpx.Client() as client:
-        for case in CASES:
-            print(f"[{case['id']}] calling backend...", flush=True)
-            backend_result = call_backend(client, backend_url, case["raw_input"])
+    servers = FailureServers() if any(c.get("break") for c in cases) else None
+    try:
+        with httpx.Client() as judge_client:
+            for case in cases:
+                print(f"[{case['id']}] running...", flush=True)
+                if case.get("break"):
+                    url, key = servers.url_and_key(case["break"])
+                    api = Api(url, key, args.timeout)
+                else:
+                    api = live
+                result = run_case(api, case)
+                if api is not live:
+                    api.close()
+                if judge and not result.error and result.steps and result.steps[-1].response:
+                    result.judge = judge_case(judge, judge_client, case, result.steps[-1].response)
+                results.append(result)
+                print(f"[{case['id']}] {result.outcome}", flush=True)
+    finally:
+        live.close()
+        if servers:
+            servers.close()
 
-            judge_result = None
-            if judge and backend_result["ok"]:
-                print(f"[{case['id']}] calling judge ({judge})...", flush=True)
-                prompt = JUDGE_PROMPT_TEMPLATE.format(
-                    raw_input=case["raw_input"],
-                    notes=case["notes"],
-                    expected_department=case["expected_department"],
-                    expected_resolution=case["expected_resolution"],
-                    ground_truth=case["ground_truth"],
-                    actual_response=json.dumps(backend_result["response"], indent=2),
-                )
-                judge_result = call_judge(judge, client, prompt)
-
-            results.append({
-                "case": case,
-                "backend_result": backend_result,
-                "judge_result": judge_result,
-            })
-    return results, judge
-
-
-def write_report(results: list[dict], judge: str | None, backend_url: str, out_path: Path) -> None:
-    lines = []
-    lines.append("# agent_company eval run")
-    lines.append("")
-    lines.append(f"- **Run at**: {datetime.now(timezone.utc).isoformat()}")
-    lines.append(f"- **Backend**: {backend_url}")
-    lines.append(f"- **Judge**: {judge or 'none - GEMINI_API_KEY/XAI_API_KEY/GROK_API_KEY not set, transcript only'}")
-    lines.append(f"- **Cases run**: {len(results)}")
-    lines.append("")
-
-    scored = [r for r in results if r["judge_result"] and r["judge_result"]["ok"]]
-    if scored:
-        scores = [r["judge_result"]["verdict"]["score_1_to_5"] for r in scored]
-        lines.append(f"- **Average score**: {sum(scores) / len(scores):.2f} / 5 (over {len(scored)} judged cases)")
-        routing_checked = [r for r in scored if r["judge_result"]["verdict"]["routing_correct"] is not None]
-        if routing_checked:
-            routing_ok = sum(1 for r in routing_checked if r["judge_result"]["verdict"]["routing_correct"])
-            lines.append(f"- **Routing correct**: {routing_ok}/{len(routing_checked)}")
-        resolution_ok = sum(1 for r in scored if r["judge_result"]["verdict"]["resolution_appropriate"])
-        lines.append(f"- **Resolution decision appropriate**: {resolution_ok}/{len(scored)}")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-
-    for r in results:
-        case = r["case"]
-        lines.append(f"## {case['id']}")
-        lines.append("")
-        lines.append(f"**Ticket**: {case['raw_input']}")
-        lines.append("")
-        lines.append(f"**Expected**: department=`{case['expected_department']}`, resolution=`{case['expected_resolution']}`")
-        if case["ground_truth"]:
-            lines.append(f"**Ground truth**: {case['ground_truth']}")
-        lines.append("")
-        lines.append(f"**Testing**: {case['notes']}")
-        lines.append("")
-
-        if not r["backend_result"]["ok"]:
-            lines.append(f"**BACKEND CALL FAILED**: {r['backend_result']['error']}")
-            lines.append("")
-            lines.append("---")
-            lines.append("")
-            continue
-
-        resp = r["backend_result"]["response"]
-        lines.append("**Actual response**:")
-        lines.append("```json")
-        lines.append(json.dumps(resp, indent=2))
-        lines.append("```")
-        lines.append("")
-
-        if r["judge_result"] is None:
-            lines.append("*(no judge configured)*")
-        elif not r["judge_result"]["ok"]:
-            lines.append(f"**JUDGE CALL FAILED**: {r['judge_result']['error']}")
-        else:
-            v = r["judge_result"]["verdict"]
-            lines.append(f"**Judge verdict**: score {v['score_1_to_5']}/5")
-            lines.append(f"- routing_correct: {v['routing_correct']}")
-            lines.append(f"- resolution_appropriate: {v['resolution_appropriate']}")
-            lines.append(f"- answer_grounded: {v['answer_grounded']}")
-            lines.append(f"- reasoning: {v['reasoning']}")
-        lines.append("")
-        lines.append("---")
-        lines.append("")
-
-    out_path.write_text("\n".join(lines))
-    print(f"\nWrote {out_path}")
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend-url", default="http://localhost:8080")
-    parser.add_argument("--out", default=str(Path(__file__).resolve().parent / "evals.md"))
-    args = parser.parse_args()
-
-    results, judge = run(args.backend_url)
-    write_report(results, judge, args.backend_url, Path(args.out))
+    out = Path(args.out) if args.out else Path(__file__).resolve().parent / "results" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".md")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(render_report(results, {
+        "run_at": datetime.now(timezone.utc).isoformat(), "api": args.api_url, "judge": judge,
+    }))
+    print(f"\nWrote {out}")
+    bad = [r for r in results if r.outcome in ("FAIL", "ERROR")]
+    print(f"{len(results) - len(bad)}/{len(results)} cases ok" + (f"; not ok: {', '.join(r.case['id'] for r in bad)}" if bad else ""))
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

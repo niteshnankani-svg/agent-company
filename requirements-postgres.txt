@@ -1,0 +1,4 @@
+# Only needed when CHECKPOINT_DB_URL is set (Postgres instead of the local SQLite file).
+-r requirements.txt
+langgraph-checkpoint-postgres
+psycopg[binary,pool]
