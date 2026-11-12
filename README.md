@@ -78,7 +78,17 @@ The Backend department's ticketing service (`github.com/niteshnankani-svg/Multi_
 ```
 
 then set `TICKETING_URL=http://localhost:8103/ticket`. Tested here as far as install and import: the sandbox could not
-download its embedding model, so it has not been started. Tested here only as far as
+download its embedding model, so it has not been started.
+
+And the Export department's NiryatAI backend (`github.com/niteshnankani-svg/niryat-ai`):
+
+```bash
+./scripts/run_niryat_local.sh   # serves on :8104; copies ANTHROPIC_API_KEY from this .env
+```
+
+then set `NIRYAT_CHAT_URL=http://localhost:8104/chat` and `NIRYAT_TRADEDATA_URL=http://localhost:8104/tradedata`. Its
+study-material knowledge base is built from documents that are not in the repository, so it starts empty (only the 12
+committed video summaries are loaded). `/tradedata` queries the government TradeStat site live, so it needs internet. Tested here only as far as
 install and boot: the sandbox could not download the index, and no real question has been answered.
 
 ```bash
