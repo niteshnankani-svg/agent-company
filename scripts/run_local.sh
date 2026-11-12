@@ -56,7 +56,9 @@ fi
 
 # --- Run both, stop both ---------------------------------------------------------------------
 PIDS=()
-cleanup() { trap - INT TERM EXIT; kill "${PIDS[@]}" 2>/dev/null || true; wait 2>/dev/null || true; }
+# npm starts Next as a child, so killing npm alone can leave Next running: stop each process and everything under it.
+kill_tree() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done; kill "$1" 2>/dev/null || true; }
+cleanup() { trap - INT TERM EXIT; for p in "${PIDS[@]}"; do kill_tree "$p"; done; wait 2>/dev/null || true; }
 trap cleanup INT TERM EXIT
 
 set -a; . ./.env; set +a
@@ -69,4 +71,6 @@ echo
 echo "API:     http://localhost:$API_PORT/ready"
 echo "Console: http://localhost:$CONSOLE_PORT"
 echo "Ctrl-C stops both."
-wait -n "${PIDS[@]}"   # if either one dies, stop the other too
+# If either one dies, stop the other too. (Polling, not `wait -n`: macOS ships bash 3.2, which has no `wait -n`.)
+while kill -0 "${PIDS[0]}" 2>/dev/null && kill -0 "${PIDS[1]}" 2>/dev/null; do sleep 1; done
+echo "One of the two stopped; stopping the other."
