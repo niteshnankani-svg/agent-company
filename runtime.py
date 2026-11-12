@@ -60,10 +60,13 @@ def _postgres_runtime(url: str) -> Runtime:
     from psycopg.rows import dict_row
     from psycopg_pool import ConnectionPool
 
+    # Bounded waits: with the database down, a call fails in seconds instead of hanging a worker.
+    connect_timeout = env_int("CHECKPOINT_CONNECT_TIMEOUT_SECONDS", 5)
     pool = ConnectionPool(
         conninfo=url,
         max_size=env_int("CHECKPOINT_POOL_SIZE", 10),
-        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        timeout=float(env_int("CHECKPOINT_POOL_TIMEOUT_SECONDS", 10)),  # how long a caller waits for a connection
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row, "connect_timeout": connect_timeout},
         open=True,
     )
     saver = PostgresSaver(pool)

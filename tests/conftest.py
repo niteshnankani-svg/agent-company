@@ -1,7 +1,9 @@
 import pytest
 
 import cache as cache_module
+import ready
 import runtime
+import services
 import extraction
 import verifier
 
@@ -14,6 +16,12 @@ def isolate_process_wide_state(monkeypatch, tmp_path):
     # Every test gets its own empty database; a "restart" is runtime.reset_runtime().
     monkeypatch.setenv("CHECKPOINT_DB_PATH", str(tmp_path / "checkpoints.sqlite"))
     runtime.reset_runtime()
+    # Existing API tests run in explicit development mode (no keys); tests/test_auth.py turns auth on.
+    monkeypatch.setenv("AGENT_AUTH_DISABLED", "true")
+    for name in ("API_KEYS", "DEPARTMENT_TIMEOUT_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
+    ready.reset_cache()
+    services.set_transport(None)
     cache_module.set_cache(None, "disabled for tests")  # individual tests install their own
 
     def no_model(text, defs):

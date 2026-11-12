@@ -5,6 +5,12 @@ import { NextRequest, NextResponse } from "next/server";
 // authentication, which the API gains in a later phase, and they are for staff, not for the public page.
 export const runtime = "nodejs";
 
+// The API key stays on the server: it is read here and sent upstream, and never sent to the browser.
+function authHeader(): Record<string, string> {
+  const key = process.env.AGENT_COMPANY_API_KEY;
+  return key ? { Authorization: `Bearer ${key}` } : {};
+}
+
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ runId: string }> }) {
   const base = process.env.AGENT_COMPANY_API_URL;
   if (!base) {
@@ -19,6 +25,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ run
   try {
     upstream = await fetch(`${base.replace(/\/$/, "")}/runs/${runId}`, {
       cache: "no-store",
+      headers: authHeader(),
       signal: AbortSignal.timeout(15_000),
     });
   } catch (error) {

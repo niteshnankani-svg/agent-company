@@ -444,3 +444,53 @@ The inbox returns the user's request text (truncated to 500 characters in the li
 **Chosen:** `requirements.txt` lists only what `uvicorn api:app` imports (langgraph, the SQLite checkpointer, pydantic, fastapi, uvicorn, httpx, numpy, anthropic[bedrock], boto3, typesafe-sdk), each bounded to the next major version from the versions I tested. Removed: `mcp`, `xgboost`, `scikit-learn`, `pandas`, `joblib`, `faker` (used only by the offline training scripts, now `requirements-train.txt`). Verified: a clean virtualenv with only `requirements.txt` imports the real app with no keys and no database. Postgres and local embeddings stay optional extras.
 
 **At 100x load / supply chain:** bounds, not a lock file. A lock file (pip-compile) is the next step for reproducible builds.
+
+## D-052 — A hard deadline per department attempt
+
+**Chosen:** `run_department` runs each department in a worker thread and waits at most `DEPARTMENT_TIMEOUT_SECONDS` (default 180 s, deliberately above Export's two service timeouts of 60 + 90 s). On expiry it returns `failed` with `timed_out: <department> did not finish within Ns` and the graph carries on. An unexpected exception is `failed` with only its type; a `TimeoutError` raised by the department itself is reported as an unexpected error, not as the deadline.
+
+**Honest limit:** a Python thread cannot be killed. An abandoned call keeps running until its own service timeout fires. If every one of the 64 workers (`DEPARTMENT_WORKERS`) were stuck, new attempts would queue and then time out too, so requests still return, but throughput would stall until the services recover.
+
+**Rejected:** relying on each service's own timeout alone (a bug in any client would hang a request).
+
+## D-053 — `/ready` reports which departments can work; a down service means degraded, not unready
+
+**Chosen:** `GET /ready` checks storage (a real query, bounded in time), authentication, whether the router key is set, and probes each department's address (any HTTP reply means reachable; connection error or timeout means unreachable; 5xx means unhealthy; an unset address means not configured). Overall: `ready`, `degraded` (a department or the router is unavailable; the API still answers, and that department returns `failed`), or `not_ready` (storage down or authentication not configured; HTTP 503). Probes run concurrently and are cached for 5 s so the endpoint cannot be used to hammer the services. It returns status words and variable names, never addresses. `<NAME>_PROBE_URL` lets a service be probed at a different address (for example a `/health` route).
+
+**Not probed:** the router key and AWS access are reported only as present or absent. Checking Bedrock reachability would cost a model call.
+
+**Found while testing:** with Postgres down, each call waited 30 s inside the connection pool. Connect and pool-wait timeouts are now set (5 s and 10 s, configurable) and `/ready` bounds its own check, so a dead database fails fast.
+
+**Rejected:** making a down department fail the whole `/ready` (an orchestrator would then restart a healthy API because one downstream service is down).
+
+## D-054 — API-key authentication, two roles, fail closed
+
+**Chosen:** `API_KEYS=name:role:key,...` with roles `client` (submit, look up a run) and `reviewer` (also list and decide reviews). Bearer token, constant-time comparison against every key, keys at least 24 characters, never logged or echoed. **The reviewer recorded on a decision is the name of the key used; a name in the request body is ignored** (a test sends "the CEO" and checks `asha` is recorded). `/health` and `/ready` are open. With no valid keys configured the protected endpoints answer 503 rather than letting everyone in. `AGENT_AUTH_DISABLED=true` turns authentication off explicitly for local development; the caller is then anonymous and must give a reviewer name.
+
+**This closes D-047:** the reviewer endpoints are no longer open.
+
+**The console** sends its own `client` key from its server-side routes (`AGENT_COMPANY_API_KEY`); a browser test checks the key never appears in what the browser receives.
+
+**Not done:** rate limiting or lockout after repeated bad keys; keys are long random values, but a gateway should rate-limit. No key rotation tooling: change the environment and restart. At 100x load, keys in an environment variable should become a secret store and per-person identities.
+
+## D-055 — A 500 carries an incident id, never the exception
+
+**Chosen:** an unexpected error returns `Something went wrong on our side. Incident <id>.`; the real exception and traceback go to the server log under that id. This covers `/request` and, through a global handler, every other endpoint. Department and service failures are not 500s at all: they are `failed` results with a safe code (D-050).
+
+**Rejected:** `str(exception)` in the response (the old behaviour; it can carry hostnames, SQL, paths and secrets).
+
+## D-056 — Deployment: what is in the image and what I could not verify
+
+**Chosen:** the Dockerfile installs only `requirements.txt`, runs as a non-root user, keeps SQLite in a volume (`/app/data`) unless `CHECKPOINT_DB_URL` is set, has a healthcheck on `/health`, and starts one worker (the answer cache is per process). `.dockerignore` keeps the image to the 36 files the API imports (no tests, frontend, models, training scripts or docs). `build-essential` and the unused `MODEL_BASE_PATH` are gone.
+
+**Verified:** I applied the `.dockerignore` to a copy of the repo and ran the real server from it in a virtualenv with only `requirements.txt` installed, then exercised health, ready, auth and the full review flow over HTTP.
+
+**NOT verified:** there is no Docker daemon in this sandbox, so **I have not built the image**. Please run `docker build .` once; the file set and dependencies are proven, but the Dockerfile text itself has not been executed.
+
+**Scaling note:** SQLite plus one worker is a single-machine setup. Several workers or machines need Postgres (`CHECKPOINT_DB_URL`) and a shared cache.
+
+## D-057 — HR hosting: your change to Haiku, and what is still unknown
+
+**What you told me:** the HR SQL agent now uses Haiku. That removes the Ollama-on-a-laptop dependency, so HR needs only an address (`HR_AGENT_QUERY_URL`) and no GPU. Its timeout default fell from 280 s to 60 s.
+
+**Still unknown to me:** where the HR service runs (it can be any host the API can reach), whether it has a health route (use `HR_AGENT_QUERY_URL_PROBE_URL` if so), and its real reply shape. I have still not seen an actual response; the `{answer, evidence}` shape is from its old documentation. If it returns no `evidence`, answers are held for a person (D-008). A sample response would settle this.

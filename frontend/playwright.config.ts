@@ -32,13 +32,17 @@ export default defineConfig({
       command: "node tests/mock-api.mjs",
       url: `http://127.0.0.1:${MOCK_PORT}/health`,
       reuseExistingServer: !process.env.CI,
+      env: { MOCK_API_KEY: "test-console-key-0123456789abcdef" },
     },
     {
       command: "npm run dev",
       url: `http://localhost:${PORT}`,
       reuseExistingServer: !process.env.CI,
       timeout: 90_000,
-      env: { AGENT_COMPANY_API_URL: `http://127.0.0.1:${MOCK_PORT}` },
+      env: {
+        AGENT_COMPANY_API_URL: `http://127.0.0.1:${MOCK_PORT}`,
+        AGENT_COMPANY_API_KEY: "test-console-key-0123456789abcdef",
+      },
     },
   ],
 });

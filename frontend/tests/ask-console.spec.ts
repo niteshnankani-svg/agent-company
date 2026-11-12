@@ -94,6 +94,19 @@ test("a request a person declined is shown as declined, not as a service failure
   await expect(page.getByTestId("result-failed")).toHaveCount(0);
 });
 
+test("the console authenticates to the API with its own key, and the key never reaches the browser", async ({ page, request }) => {
+  const seenByBrowser: string[] = [];
+  page.on("response", async (res) => {
+    try { seenByBrowser.push(await res.text()); } catch { /* binary or redirected */ }
+  });
+  await ask(page, "answered-legal What is Section 357 of BNS about?");
+  await expect(page.getByTestId("result-status")).toHaveAttribute("data-status", "answered"); // the mock 401s without the key
+  const { lastAuth } = await (await request.get(`${MOCK}/__auth`)).json();
+  expect(lastAuth).toBe("Bearer test-console-key-0123456789abcdef");
+  expect(seenByBrowser.join("\n")).not.toContain("test-console-key");
+  expect(await page.content()).not.toContain("test-console-key");
+});
+
 test("the console exposes only a read-only status lookup, never the reviewer actions", async ({ request }) => {
   expect((await request.get("/api/agent/runs/not-a-reference")).status()).toBe(400);
   expect((await request.get(`/api/agent/runs/${"0".repeat(32)}`)).status()).toBe(404);

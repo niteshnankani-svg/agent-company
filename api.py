@@ -2,21 +2,42 @@ import asyncio
 import logging
 import uuid
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from langgraph.types import Command
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from typing import Optional
 
+from auth import ANONYMOUS, Principal, require
 from contract import DepartmentResult
 from departments import DEPARTMENT_NAMES
 from graph import build_initial_state
+from ready import readiness
 from review import HumanDecision, has_draft
 from runtime import get_runtime
 from state import new_state
 
 log = logging.getLogger(__name__)
 
+CLIENT = Depends(require("client", "reviewer"))
+REVIEWER = Depends(require("reviewer"))
+
 app = FastAPI(title="Agent Company API", version="1.0.0")
+
+
+
+def _incident(exc: BaseException, where: str) -> str:
+    """Log the real error with a short id and return that id. The caller only ever sees the id."""
+    incident = uuid.uuid4().hex[:10]
+    log.error("incident %s in %s", incident, where, exc_info=exc)
+    return incident
+
+
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception):
+    incident = _incident(exc, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": f"Something went wrong on our side. Incident {incident}."})
+
 
 # The graph and its storage are created on first use (runtime.py), not at import, so importing this
 # module needs no database and no keys.
@@ -37,6 +58,15 @@ class FollowUpIn(BaseModel):
         if v not in DEPARTMENT_NAMES:
             raise ValueError(f"unknown department {v!r}")
         return v
+
+
+class ResumeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: str
+    note: Optional[str] = None
+    answer: Optional[str] = None
+    reviewer: Optional[str] = None  # honoured only when authentication is disabled
 
 
 class DepartmentRequest(BaseModel):
@@ -81,7 +111,7 @@ def _response(run_id: str, snapshot) -> dict:
 
 
 @app.post("/request")
-async def handle_request(req: DepartmentRequest):
+async def handle_request(req: DepartmentRequest, principal: Principal = CLIENT):
     try:
         if req.department_sequence:
             state = new_state(
@@ -116,15 +146,17 @@ async def handle_request(req: DepartmentRequest):
         # but invoke the synchronous graph off the event-loop thread.
         await asyncio.to_thread(runtime.graph.invoke, state, _config(run_id))
         return _response(run_id, runtime.graph.get_state(_config(run_id)))
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Request processing failed: {str(e)}",
+            detail=f"The request could not be processed. Incident {_incident(exc, '/request')}.",
         )
 
 
 @app.get("/reviews")
-async def list_reviews(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
+async def list_reviews(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), principal: Principal = REVIEWER):
     """Runs waiting for a person, oldest first."""
     reviews = get_runtime().reviews
     return {
@@ -145,7 +177,7 @@ async def list_reviews(limit: int = Query(50, ge=1, le=200), offset: int = Query
 
 
 @app.get("/runs/{run_id}")
-async def get_run(run_id: str):
+async def get_run(run_id: str, principal: Principal = CLIENT):
     """Where a run stands: the result so far (the draft and evidence a reviewer needs, or the final
     outcome once decided) and whether it is still waiting for a person."""
     runtime = get_runtime()
@@ -156,8 +188,17 @@ async def get_run(run_id: str):
 
 
 @app.post("/reviews/{run_id}/resume")
-async def resume_review(run_id: str, decision: HumanDecision):
-    """A person's decision on a paused run: approve the draft, write the answer, or reject."""
+async def resume_review(run_id: str, body: ResumeBody, principal: Principal = REVIEWER):
+    """A person's decision on a paused run: approve the draft, write the answer, or reject.
+
+    The reviewer recorded is the name of the API key used; it cannot be chosen by the caller. (Only with
+    authentication explicitly disabled, for local development, is a name taken from the body.)
+    """
+    reviewer = principal.name if principal is not ANONYMOUS else (body.reviewer or "")
+    try:
+        decision = HumanDecision(action=body.action, reviewer=reviewer, note=body.note, answer=body.answer)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=[{"msg": e["msg"], "loc": list(e["loc"])} for e in exc.errors()])
     runtime = get_runtime()
     config = _config(run_id)
     snapshot = await asyncio.to_thread(runtime.graph.get_state, config)
@@ -180,6 +221,13 @@ async def resume_review(run_id: str, decision: HumanDecision):
         raise HTTPException(status_code=500, detail="Could not apply the decision. It is still pending; try again.")
     await asyncio.to_thread(runtime.reviews.resolve, run_id, decision.action, decision.reviewer)
     return _response(run_id, await asyncio.to_thread(runtime.graph.get_state, config))
+
+
+@app.get("/ready")
+async def ready():
+    """Can this process usefully take requests, and which departments can do their job right now?"""
+    report, code = await readiness(get_runtime)
+    return JSONResponse(status_code=code, content=report)
 
 
 @app.get("/health")

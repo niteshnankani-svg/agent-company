@@ -5,7 +5,9 @@ import http from "node:http";
 
 const PORT = Number(process.env.MOCK_API_PORT || 8099);
 let last = null;
+let lastAuth = null;
 let counter = 0;
+const KEY = process.env.MOCK_API_KEY; // when set, /request and /runs require this bearer token
 const runs = new Map(); // run_id -> { response, resolved }
 const newRunId = () => (++counter).toString(16).padStart(32, "0");
 const decided = (response) => ({
@@ -89,6 +91,14 @@ function respond(text, id) {
 }
 
 http.createServer((req, res) => {
+  if (KEY && (req.url === "/request" || req.url.startsWith("/runs/"))) {
+    lastAuth = req.headers.authorization ?? null;
+    if (lastAuth !== `Bearer ${KEY}`) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      return res.end('{"detail":"Missing or invalid API key."}');
+    }
+  }
+  if (req.url === "/__auth") { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ lastAuth })); }
   if (req.url === "/health") { res.writeHead(200, { "Content-Type": "application/json" }); return res.end('{"status":"ok"}'); }
   const run = req.url.match(/^\/runs\/([0-9a-f]{32})$/);
   if (run) {

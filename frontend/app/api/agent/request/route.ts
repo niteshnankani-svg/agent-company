@@ -7,6 +7,12 @@ import { NextRequest, NextResponse } from "next/server";
 // an answer from some other system. The browser talks to this route (not to Python
 // directly) so the API address, and later the API key, stay on the server.
 export const runtime = "nodejs";
+
+// The API key stays on the server: it is read here and sent upstream, and never sent to the browser.
+function authHeader(): Record<string, string> {
+  const key = process.env.AGENT_COMPANY_API_KEY;
+  return key ? { Authorization: `Bearer ${key}` } : {};
+}
 export const maxDuration = 60;
 
 const MAX_INPUT_CHARS = 8000;
@@ -72,7 +78,7 @@ export async function POST(req: NextRequest) {
   try {
     upstream = await fetch(`${base.replace(/\/$/, "")}/request`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeader() },
       // Only the sentence, an id and (for a follow-up form) the user's answers are forwarded.
       // The Python API decides everything else.
       body: JSON.stringify({

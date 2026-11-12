@@ -33,6 +33,6 @@ npm run test:e2e
 ```
 
 These use a small mock of the Python API started by the test run, so they need no backend
-and no keys. They check the UI for each status, that the route forwards only the sentence
+and no real keys. They check the UI for each status, that the route forwards only the sentence
 and an id, that API failures are reported without leaking upstream text, and that no router
 code exists in the frontend.
