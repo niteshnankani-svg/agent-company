@@ -100,38 +100,6 @@ class Embedder(Protocol):
     def embed(self, text: str) -> list[float]: ...
 
 
-class BedrockEmbedder:
-    """Amazon Titan text embeddings through Bedrock. Needs AWS credentials."""
-
-    def __init__(self, model_id: str, region: str, client: Any = None):
-        self.model_id = model_id
-        self._region = region
-        self._client = client
-
-    def _get_client(self):
-        if self._client is None:
-            import boto3
-            from botocore.config import Config
-
-            self._client = boto3.client(
-                "bedrock-runtime",
-                region_name=self._region,
-                config=Config(
-                    connect_timeout=env_float("EMBEDDING_TIMEOUT_SECONDS", 5.0),
-                    read_timeout=env_float("EMBEDDING_TIMEOUT_SECONDS", 5.0),
-                    retries={"max_attempts": env_int("EMBEDDING_MAX_RETRIES", 2), "mode": "standard"},
-                ),
-            )
-        return self._client
-
-    def embed(self, text: str) -> list[float]:
-        body = json.dumps({"inputText": text[:8000], "normalize": True})
-        response = self._get_client().invoke_model(
-            modelId=self.model_id, body=body, contentType="application/json", accept="application/json"
-        )
-        return json.loads(response["body"].read())["embedding"]
-
-
 class LocalEmbedder:
     """A local sentence-transformers model. No key, but a large optional dependency."""
 
@@ -152,17 +120,9 @@ def embedder_from_env() -> tuple[Optional[Embedder], str]:
     provider = os.environ.get("EMBEDDING_PROVIDER", "").strip().lower()
     if not provider:
         return None, "EMBEDDING_PROVIDER is not set"
-    if provider == "bedrock":
-        return (
-            BedrockEmbedder(
-                os.environ.get("EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"),
-                os.environ.get("EMBEDDING_REGION", os.environ.get("BEDROCK_REGION", "us-east-1")),
-            ),
-            "bedrock",
-        )
     if provider == "local":
         return LocalEmbedder(os.environ.get("EMBEDDING_MODEL_ID", "sentence-transformers/all-MiniLM-L6-v2")), "local"
-    log.error("Unknown EMBEDDING_PROVIDER %r (expected 'bedrock' or 'local'); cache disabled", provider)
+    log.error("Unknown EMBEDDING_PROVIDER %r (expected 'local'); cache disabled", provider)
     return None, f"unknown EMBEDDING_PROVIDER {provider!r}"
 
 

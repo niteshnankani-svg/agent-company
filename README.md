@@ -50,19 +50,20 @@ Service addresses and timeouts are in [`docs/SERVICES.md`](docs/SERVICES.md).
 
 ## Run it locally
 
-You need Python 3.11+, Node 22+, and, for real routing, a TypeSafe key and AWS credentials for Bedrock.
+You need Python 3.11+, Node 22+, and, for real routing, a TypeSafe key and an Anthropic API key (`ANTHROPIC_API_KEY`).
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # then edit: service addresses, TYPESAFE_API_KEY, API_KEYS
+cp .env.example .env          # then edit: service addresses, TYPESAFE_API_KEY, ANTHROPIC_API_KEY, API_KEYS
 set -a && . ./.env && set +a
 uvicorn api:app --port 8080
 ```
 
 Without service addresses a department returns `failed: not_configured`, and without the router key every request
-goes to a person with the reason `classifier_unavailable`. Both are clear, nothing crashes. `GET /ready` shows
-what is and is not set up.
+goes to a person with the reason `classifier_unavailable`. Without `ANTHROPIC_API_KEY` the router fallback and Finance
+extraction are unavailable and the verifier cannot check, so HR, Export and Legal answers are withheld for a person
+(`verification_unavailable`). All are clear, nothing crashes. `GET /ready` shows what is and is not set up.
 
 For local development only, `AGENT_AUTH_DISABLED=true` switches API-key authentication off.
 

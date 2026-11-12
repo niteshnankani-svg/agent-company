@@ -18,7 +18,7 @@ from typing import Optional
 import httpx
 
 from auth import auth_status
-from clients import env_float
+from clients import anthropic_key_configured, env_float
 from services import http_client, service_url
 
 # department -> the environment variables holding the addresses of the services it needs
@@ -90,11 +90,12 @@ async def readiness(runtime_getter) -> tuple[dict, int]:
         "auth": auth_status(),
         # Not probed: these only say whether the setting is present.
         "router_key": "configured" if os.environ.get("TYPESAFE_API_KEY") else "not_configured",
+        "anthropic_key": "configured" if anthropic_key_configured() else "not_configured",
         "answer_cache": "configured" if os.environ.get("EMBEDDING_PROVIDER") else "off",
     }
     if storage != "ok" or dependencies["auth"] == "not_configured":
         status = "not_ready"
-    elif any(d["status"] != "ok" for d in departments.values()) or dependencies["router_key"] != "configured":
+    elif any(d["status"] != "ok" for d in departments.values()) or "not_configured" in (dependencies["router_key"], dependencies["anthropic_key"]):
         status = "degraded"
     else:
         status = "ready"

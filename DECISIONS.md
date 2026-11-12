@@ -548,3 +548,17 @@ The inbox returns the user's request text (truncated to 500 characters in the li
 **What is lost, and what is not:** the two AP files can be regenerated with `train_ap_classifier.py` (fixed random seed, but not guaranteed byte-identical). **The two `credit_risk_*` files cannot be regenerated from this repository: there is no training script for the credit model.** They remain in git history (the commits before this one), so `git show <earlier-commit>:models/finance/credit_risk_xgb.pkl` recovers them. An outside tool ("Company Desk") was once said to read these files; if it still does, restore them from history.
 
 **Supersedes** the "left in place" part of D-061.
+
+## D-064 — Anthropic's own API replaces AWS Bedrock
+
+**Chosen:** the router fallback (`orchestrator.llm_classify`), Finance extraction and the verifier now call Anthropic's API directly through `anthropic.Anthropic`, using `ANTHROPIC_API_KEY`. `clients.get_bedrock_client` became `get_anthropic_client` (still created on first use, never at import). Settings: `ANTHROPIC_TIMEOUT_SECONDS` (10) and `ANTHROPIC_MAX_RETRIES` (1) replace `BEDROCK_TIMEOUT_SECONDS` and `BEDROCK_MAX_RETRIES`; `BEDROCK_REGION` is gone. `ROUTER_MODEL_ID` now defaults to `claude-haiku-4-5` (a plain model name, not a Bedrock inference-profile ID). `anthropic[bedrock]` and `boto3` are removed from `requirements.txt`. `/ready` gains `dependencies.anthropic_key` (present or absent only, never the value); a missing key makes the API `degraded`.
+
+**Embeddings:** the Bedrock (Titan) embedder is deleted, and `EMBEDDING_PROVIDER=bedrock` is now an unknown provider, which logs an error and leaves the cache off. `local` is the only provider. Anthropic offers no embeddings endpoint, so a hosted provider would need a third party and its own key; I did not add one unasked. The cache was already off by default.
+
+**Rejected:** (a) keeping Bedrock behind a switch: you removed AWS, and two backends double the paths to test. (b) A newer default model: Haiku 4.5 accepts `temperature: 0` and a forced `tool_choice`, which the extraction and verifier calls use; newer models reject one or both with a 400, so changing `ROUTER_MODEL_ID` needs a code check, not just a new name. (c) Probing Anthropic in `/ready`: it would cost a model call.
+
+**Not verified:** nothing here has called Anthropic's API. Tests replace the client, and one test only builds it (timeout, retries and the `api.anthropic.com` host). Whether `claude-haiku-4-5` is the exact name your account can use, and how well it judges claims, is for your first live run.
+
+**At 100x load:** unchanged in shape: one Haiku call per routed-by-fallback request, extraction and verification. The limit is now your Anthropic account's rate limit, not AWS quotas; 429s are retried once and then treated as "unavailable" (D-037).
+
+**Supersedes** the Bedrock parts of D-018 (clients and their settings), D-022 (embedding providers), D-026 (extraction model), D-033 and D-037 (the outage described there is now an Anthropic outage), D-051 (dependency list) and D-053 (what `/ready` reports). Earlier entries are left as written.

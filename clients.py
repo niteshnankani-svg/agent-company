@@ -45,15 +45,27 @@ def get_typesafe_client() -> TypeSafeClient:
     return TypeSafeClient(**typesafe_client_kwargs())
 
 
-ROUTER_MODEL_ID = os.environ.get("ROUTER_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+# Haiku 4.5 on Anthropic's own API. This model accepts temperature 0 and a forced tool call, which the
+# extraction and verifier calls rely on. Newer models reject one or both: check before changing it.
+ROUTER_MODEL_ID = os.environ.get("ROUTER_MODEL_ID", "claude-haiku-4-5")
+
+
+def anthropic_key_configured() -> bool:
+    """Whether a credential is present. Presence only: nothing is sent to Anthropic to check it."""
+    return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
 
 
 @lru_cache(maxsize=1)
-def get_bedrock_client():
-    from anthropic import AnthropicBedrock  # imported here so a missing package is a call-time error
+def get_anthropic_client():
+    """Anthropic's API, used for the router fallback, Finance extraction and the verifier.
 
-    return AnthropicBedrock(
-        aws_region=os.environ.get("BEDROCK_REGION", "us-east-1"),
-        timeout=env_float("BEDROCK_TIMEOUT_SECONDS", 10.0),
-        max_retries=env_int("BEDROCK_MAX_RETRIES", 1),
+    The SDK reads ANTHROPIC_API_KEY itself. Without one, the first call raises, which every call site
+    already treats as "model unavailable". lru_cache does not cache an exception, so setting the key
+    later works without a restart.
+    """
+    from anthropic import Anthropic  # imported here so a missing package is a call-time error
+
+    return Anthropic(
+        timeout=env_float("ANTHROPIC_TIMEOUT_SECONDS", 10.0),
+        max_retries=env_int("ANTHROPIC_MAX_RETRIES", 1),
     )
