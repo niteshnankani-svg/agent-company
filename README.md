@@ -69,7 +69,16 @@ The department services are separate projects. To run the Legal one on the same 
 ./scripts/run_legal_local.sh   # clones it next to this folder, installs, downloads its index, serves on :8102
 ```
 
-then set `LEGAL_QUERY_URL=http://localhost:8102/query` in `.env` and restart `run_local.sh`. Tested here only as far as
+then set `LEGAL_QUERY_URL=http://localhost:8102/query` in `.env` and restart `run_local.sh`.
+
+The Backend department's ticketing service (`github.com/niteshnankani-svg/Multi_agent_ticketing_system`) runs the same way:
+
+```bash
+./scripts/run_ticketing_local.sh   # serves on :8103; copies TYPESAFE_API_KEY and ANTHROPIC_API_KEY from this .env
+```
+
+then set `TICKETING_URL=http://localhost:8103/ticket`. Tested here as far as install and import: the sandbox could not
+download its embedding model, so it has not been started. Tested here only as far as
 install and boot: the sandbox could not download the index, and no real question has been answered.
 
 ```bash
