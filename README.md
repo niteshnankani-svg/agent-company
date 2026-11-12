@@ -62,6 +62,16 @@ The first run creates `.venv`, installs both sides, and writes `.env` and `front
 generated API key shared by the two. It never overwrites an existing file. Then edit `.env` to add `ANTHROPIC_API_KEY`,
 `TYPESAFE_API_KEY` and your service addresses, and run it again. The steps below are the same thing done by hand.
 
+The department services are separate projects. To run the Legal one on the same machine
+(`github.com/niteshnankani-svg/legal-rag-chatbot`, API only, needs Python 3.11 or 3.12 and an OpenAI key):
+
+```bash
+./scripts/run_legal_local.sh   # clones it next to this folder, installs, downloads its index, serves on :8102
+```
+
+then set `LEGAL_QUERY_URL=http://localhost:8102/query` in `.env` and restart `run_local.sh`. Tested here only as far as
+install and boot: the sandbox could not download the index, and no real question has been answered.
+
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
