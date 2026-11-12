@@ -34,3 +34,7 @@ frontend/tsconfig.tsbuildinfo
 
 # Durable run state and the review inbox (SQLite file); sensitive data, never commit
 data/
+
+# Trained model files. Pickles can run code when loaded, so they are not kept in git.
+*.pkl
+models/

@@ -173,7 +173,7 @@ Details: [`evals/README.md`](evals/README.md). No eval has been run against real
 | `review.py`, `review_store.py`, `runtime.py` | Human decisions, the review inbox, and durable storage |
 | `frontend/` | The console |
 | `tests/`, `evals/` | Tests (offline) and the live eval (yours to run) |
-| `train_ap_classifier.py`, `synthetic_data_generator.py`, `models/`, `syntheic_data/` | Offline training material for a finance model that is **not used** by the running system. Left in place; see `DECISIONS.md` |
+| `train_ap_classifier.py`, `synthetic_data_generator.py`, `syntheic_data/` | Offline scripts and data for a finance model that is **not used** by the running system. The trained pickles were deleted (`DECISIONS.md` D-063) |
 
 ## What is not true yet
 

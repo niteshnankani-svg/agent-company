@@ -538,3 +538,13 @@ The inbox returns the user's request text (truncated to 500 characters in the li
 ## D-062 — Documentation
 
 `README.md` is rewritten from the code as it now stands (what runs, how to run, test, deploy and eval it, and what is not true yet). `HOW_IT_WORKS.md` is rewritten for the rebuilt system and keeps the Phase 0 defect list with what happened to each. `docs/SERVICES.md` replaced the MCP document. `frontend/README.md` was rewritten in Phase 2 and updated since.
+
+## D-063 — The model pickles are deleted (on your instruction, after the merge)
+
+**Chosen:** `models/finance/ap_classifier.pkl`, `ap_label_encoder.pkl`, `credit_risk_scaler.pkl` and `credit_risk_xgb.pkl` are removed from the working tree. `*.pkl` and `models/` are now git-ignored so trained pickles cannot be committed again, and `train_ap_classifier.py` creates its output directory itself.
+
+**Why it is safe for the running system:** nothing in the API, graph, departments, tests or Docker image loads them (the image already excluded `models/`). Finance uses a rule-based policy, not a trained model.
+
+**What is lost, and what is not:** the two AP files can be regenerated with `train_ap_classifier.py` (fixed random seed, but not guaranteed byte-identical). **The two `credit_risk_*` files cannot be regenerated from this repository: there is no training script for the credit model.** They remain in git history (the commits before this one), so `git show <earlier-commit>:models/finance/credit_risk_xgb.pkl` recovers them. An outside tool ("Company Desk") was once said to read these files; if it still does, restore them from history.
+
+**Supersedes** the "left in place" part of D-061.
