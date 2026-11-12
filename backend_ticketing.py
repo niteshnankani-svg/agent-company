@@ -17,7 +17,7 @@ import re
 
 from contract import DepartmentResult, Evidence, service_error
 from pii import scrub_pii
-from ticketing_mcp import ask_ticketing_agent
+from ticketing_client import ask_ticketing_agent
 
 DEPARTMENT = "backend_ticketing"
 MAX_TICKET_CHARS = 8000

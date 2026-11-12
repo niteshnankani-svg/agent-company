@@ -21,7 +21,7 @@ from typesafe_sdk import Noul
 
 from clients import get_typesafe_client
 from contract import DepartmentResult, Evidence, service_error, with_feedback
-from hr_agent_mcp import ask_hr_agent
+from hr_client import ask_hr_agent
 
 DEPARTMENT = "hr_complaints"
 COMPLAINT_THRESHOLD = 0.5

@@ -1,0 +1,7 @@
+# Only for the offline scripts train_ap_classifier.py and synthetic_data_generator.py.
+# The running API does not use any of these.
+numpy
+pandas
+scikit-learn
+joblib
+faker

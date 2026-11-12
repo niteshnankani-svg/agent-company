@@ -18,7 +18,7 @@ import asyncio
 from typing import Optional
 
 from contract import DepartmentResult, Evidence, service_error, truncate, with_feedback
-from niryat_mcp import ask_export_question, get_trade_data
+from niryat_client import ask_export_question, get_trade_data
 
 DEPARTMENT = "export_compliance"
 

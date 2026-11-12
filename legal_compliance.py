@@ -18,7 +18,7 @@ from typing import Optional
 from pydantic import ValidationError
 
 from contract import Confidence, DepartmentResult, Evidence, service_error, with_feedback
-from legal_rag_mcp import ask_legal_question
+from legal_client import ask_legal_question
 
 DEPARTMENT = "legal_compliance"
 

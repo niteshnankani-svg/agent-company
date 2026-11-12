@@ -416,3 +416,31 @@ The sequential mode (`department_sequence`) still verifies only the last departm
 ## D-048 — Reviewers see the question; the list truncates it
 
 The inbox returns the user's request text (truncated to 500 characters in the list; 2,000 stored). It can contain personal data, which is one more reason for D-047.
+
+---
+
+# Phase 6 — dependencies and deployment
+
+## D-049 — MCP: renamed and removed, taking my recommended default (you did not choose)
+
+**Chosen:** the `*_mcp.py` files are now `legal_client.py`, `hr_client.py`, `ticketing_client.py` and `niryat_client.py`. The FastMCP wrappers and the `mcp` dependency are gone, `ticket_router_mcp.py` (imported by nothing, and pointing at a plain-HTTP raw IP) is deleted, and `docs/MCP_SERVERS.md` is replaced by `docs/SERVICES.md`, which says plainly that these are HTTP services.
+
+**Why this was a default and not your decision:** I asked which you wanted, twice, and got no answer. I took my recommendation because the code never started an MCP server or client (Phase 0, defect #7), so the rename loses no capability. **It is one commit (the first of Phase 6); `git revert` undoes it** if you want real MCP clients instead.
+
+**Rejected:** real MCP clients in the request path. They add a process per service, startup and hang failure modes, and no capability, unless some other tool needs these as MCP servers. If that is the plan, say so.
+
+## D-050 — Every address and timeout from the environment; errors reduced to a safe code
+
+**Chosen:** `services.py` is the one place that calls a service. Addresses (`LEGAL_QUERY_URL`, `HR_AGENT_QUERY_URL`, `TICKETING_URL`, `NIRYAT_CHAT_URL`, `NIRYAT_TRADEDATA_URL`) and timeouts (`*_TIMEOUT_SECONDS`) come from the environment, read at call time. **There are no built-in defaults:** the old defaults were `localhost` ports and a CloudFront host the old comments said was terminated. An unset or non-http(s) address returns `not_configured` naming the variable. Errors become a short code (`timeout`, `http_status` with the status code, `unreachable` with only the exception type, `bad_response`). The exception message and the remote body go to the server log only. A test fails if a message, a body, or a hard-coded address reappears.
+
+**HR:** because the HR agent no longer runs a local Ollama model (you moved it to Haiku), its default timeout drops from 280 s to 60 s, still overridable. I have not seen its real reply, so the `{answer, evidence}` shape is still an assumption (D-008).
+
+**Rejected:** keeping defaults "for convenience" (a wrong default silently calls the wrong or a dead system); passing the remote body through "for debugging" (it can carry another system's internals).
+
+**Known small gap:** a service that answers HTTP 200 with its own `{"error": ...}` body is treated as an error and its `detail` (truncated to 300 characters) is shown. That is the remote's own message, not an exception.
+
+## D-051 — Runtime dependencies pruned and bounded
+
+**Chosen:** `requirements.txt` lists only what `uvicorn api:app` imports (langgraph, the SQLite checkpointer, pydantic, fastapi, uvicorn, httpx, numpy, anthropic[bedrock], boto3, typesafe-sdk), each bounded to the next major version from the versions I tested. Removed: `mcp`, `xgboost`, `scikit-learn`, `pandas`, `joblib`, `faker` (used only by the offline training scripts, now `requirements-train.txt`). Verified: a clean virtualenv with only `requirements.txt` imports the real app with no keys and no database. Postgres and local embeddings stay optional extras.
+
+**At 100x load / supply chain:** bounds, not a lock file. A lock file (pip-compile) is the next step for reproducible builds.
