@@ -1,0 +1,3 @@
+# Extra packages for evals/run_ragas.py only (not needed for run_evals.py).
+ragas
+openai

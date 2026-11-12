@@ -494,3 +494,47 @@ The inbox returns the user's request text (truncated to 500 characters in the li
 **What you told me:** the HR SQL agent now uses Haiku. That removes the Ollama-on-a-laptop dependency, so HR needs only an address (`HR_AGENT_QUERY_URL`) and no GPU. Its timeout default fell from 280 s to 60 s.
 
 **Still unknown to me:** where the HR service runs (it can be any host the API can reach), whether it has a health route (use `HR_AGENT_QUERY_URL_PROBE_URL` if so), and its real reply shape. I have still not seen an actual response; the `{answer, evidence}` shape is from its old documentation. If it returns no `evidence`, answers are held for a person (D-008). A sample response would settle this.
+
+---
+
+# Phase 7 — tests and evals
+
+## D-058 — One pytest suite; the old scripts are deleted
+
+**Chosen:** `tests/` is the suite (433 tests with Postgres, 409 without), run by `python -m pytest`, no keys, every external service mocked. The eleven root-level `test_*.py` scripts are deleted. Each was either superseded by `tests/`, tested code that no longer exists (the DistilBERT backend, the CrewAI HR path, the three-times retry cap, the confidence-band verifier), or needed a live service. The one pure test worth keeping (HS-code extraction) moved into `tests/test_clients.py`. Tests run on Python 3.11 (the Docker image) and 3.13.
+
+**Postgres:** the 24 Postgres tests skip unless `TEST_POSTGRES_URL` is set, so the suite runs anywhere. CI sets it with a Postgres service and **fails if those tests were skipped**, so they cannot silently stop running.
+
+**A flaky test, found and fixed:** on one Python 3.13 run a cache test failed. Cause: my test embedder used Python's `hash()`, which is randomised per process, so for some seeds two different words got identical vectors and the cache correctly treated them as one question. I reproduced it deterministically (`PYTHONHASHSEED=926` fails the old test and passes the new one), switched to `md5`, and ran the file under 11 other seeds. It is a rare collision (about 1 in 500 per word pair), not a frequent one, and not a product bug.
+
+**Rejected:** keeping the old scripts "for reference" (they would fail or mislead and they are in git history).
+
+## D-059 — The CI workflow, and what I could and could not run
+
+**Chosen:** `.github/workflows/ci.yml` has three jobs. **python**: a Postgres 16 service, Python 3.11 and 3.13, `pytest` with no secrets, and a step that fails if a Postgres test was skipped. **frontend**: `npm ci`, lint, build, Playwright against a mock of the API. **docker**: build the image, start it, check `/health`, check that a request without a key is 401 and with a key is 200. It needs no secrets, so a pull request from a fork runs identically. The live eval is **not** in CI.
+
+**What I ran:** the workflow's YAML parses and passes `actionlint`. I ran the python job's exact commands in fresh virtualenvs on 3.11 and 3.13 with a real Postgres, and the frontend commands. **I could not run GitHub Actions, and I could not run the docker job (no Docker daemon).** The first CI run is the first real test of the workflow and of the Dockerfile.
+
+## D-060 — Evals: deterministic checks decide, a model only comments
+
+**Chosen:** `evals/run_evals.py` sends each case to the API and checks the result with code: status, department, reason, verification label, required words, evidence present, no traceback/path/password anywhere. An optional judge (Gemini or Grok) comments on answer quality and **never** changes a pass or fail. A call that could not be made is `ERROR`, never a pass, and the exit code is non-zero for either.
+
+**Coverage is enforced:** 20 cases cover every department's `answered`, `needs_human`, `needs_more_info` and `failed` paths. Cells that cannot happen by design (Finance never answers; free-text departments never ask for fields) are listed with the reason, and a unit test fails if a cell has neither a case nor a reason.
+
+**Failed paths are observed, not assumed:** for "service down" cases the runner starts a local copy of the API with just those addresses pointed at a closed port, using a throwaway SQLite file and a generated key, never your database. A test starts a real one and checks `/ready` reports the chosen service unreachable.
+
+**Rejected:** judging pass/fail with a model (the old approach: it scored a wrong answer 4/5 with a lenient judge and its verdicts could not be reproduced); mocking the failures in the live eval (a mocked failure proves nothing about the real system).
+
+**Deleted:** the old `evals.md` and `ragas_eval.md`. They reported on a system that no longer exists and their numbers cannot be compared with anything the new tools produce. They remain in git history.
+
+**Not verified:** the eval has never run against real services, and `run_ragas.py` has never run at all (no key). Its helpers are tested; its first run is its test. The HR ground truth (Sales = 1035) is specific to your dataset.
+
+## D-061 — Dead code: deleted, and one deliberate exception to what I announced
+
+**Deleted:** `complaint_agent.py` (CrewAI/torch HR path, hard-coded local paths, a placeholder key), `backend_model.py` (the old DistilBERT path), the old test scripts, `docs/ROUTING_REGRESSION.md` and `demo/index.html` (both describe the removed system).
+
+**Left in place, which I had said I would delete:** `models/finance/*.pkl`, `train_ap_classifier.py`, `synthetic_data_generator.py` and `syntheic_data/`. Nothing in the running system uses them, but an earlier comment in `finance.py` said an outside tool ("Company Desk") evaluates the pickles, and I cannot see that tool. Deleting something an unseen consumer may read is not recoverable by me, whereas leaving it costs only clutter, and the pickles are excluded from the Docker image. Pickles can run code when loaded, so please check whether anything still needs them and delete them if not.
+
+## D-062 — Documentation
+
+`README.md` is rewritten from the code as it now stands (what runs, how to run, test, deploy and eval it, and what is not true yet). `HOW_IT_WORKS.md` is rewritten for the rebuilt system and keeps the Phase 0 defect list with what happened to each. `docs/SERVICES.md` replaced the MCP document. `frontend/README.md` was rewritten in Phase 2 and updated since.

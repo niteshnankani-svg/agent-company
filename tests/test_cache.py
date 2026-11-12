@@ -1,4 +1,5 @@
 """The semantic cache: what it may and may never store, and that it cannot confuse near-miss questions."""
+import hashlib
 import math
 
 import pytest
@@ -26,9 +27,10 @@ class WordEmbedder:
         self.calls += 1
         if self.fail:
             raise RuntimeError("embedding service down")
-        v = [0.0] * 512
+        v = [0.0] * 4096
         for w in "".join(c.lower() if c.isalnum() else " " for c in text).split():
-            v[hash(w) % 512] += 1.0
+            # md5, not hash(): Python's hash() is randomised per process, which made this test flaky
+            v[int(hashlib.md5(w.encode()).hexdigest(), 16) % 4096] += 1.0
         return v
 
 
